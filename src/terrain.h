@@ -9,13 +9,24 @@
 class Terrain {
 public:
     struct BrushParams {
-        enum Type { Raise = 0, Lower, Smooth, Flatten, Noise, Set };
+        enum Type { Raise = 0, Lower, Smooth, Flatten, Noise, Set, Texture };
         Type type = Raise;
         float radius   = 12.0f;   // world units
         float strength = 0.25f;   // height units per stroke step
         float target   = 0.0f;    // used by Flatten/Set
+        int   textureLayer = 0;   // which splat layer the Texture brush paints
         enum Falloff { FalloffSmooth = 0, FalloffLinear, FalloffConstant };
         int falloff = FalloffSmooth;
+    };
+
+    // A texture layer blended onto the terrain via the splatmap. Up to 4 layers
+    // are supported (one per RGBA channel of the splat texture).
+    struct Layer {
+        GLuint albedo = 0;
+        GLuint normal = 0;
+        float  tileSize = 8.0f;   // world units per texture tile
+        std::string name;
+        bool   hasNormal = false;
     };
 
     Terrain(int gridX = 256, int gridZ = 256, float worldSize = 200.0f);
@@ -37,12 +48,26 @@ public:
 
     void draw() const;
 
+    // Bind splatmap + layer textures to texture units and set the matching
+    // sampler uniforms on the bound shader. Call after terrainShader_.use().
+    void bindTextures(const class Shader& shader) const;
+
     // Mesh / grid info.
     int gridX() const { return gridX_; }
     int gridZ() const { return gridZ_; }
     float worldSize() const { return worldSize_; }
     float minHeight() const { return statsMin_; }
     float maxHeight() const { return statsMax_; }
+
+    // Texture layers.
+    int  layerCount() const { return (int)layers_.size(); }
+    const std::vector<Layer>& layers() const { return layers_; }
+    // Load (or replace) a layer's albedo/normal texture from a file. Returns
+    // true on success. Pass layerIndex in [0,3].
+    bool loadLayerAlbedo(int layerIndex, const std::string& path);
+    bool loadLayerNormal(int layerIndex, const std::string& path);
+    void setLayerTileSize(int layerIndex, float tileSize);
+    void resetSplat();   // clear splat to layer 0 only
 
     // Reset everything flat.
     void flatten(float height = 0.0f);
@@ -68,6 +93,11 @@ private:
     int indexCount_ = 0;
     bool  dirty_ = false;
 
+    // Texture layers + splatmap.
+    std::vector<Layer>   layers_;     // up to 4
+    std::vector<uint8_t> splat_;      // gridX_ * gridZ_ * 4 (RGBA8 weights)
+    GLuint splatTex_ = 0;
+
     float statsMin_ = 0.0f;
     float statsMax_ = 0.0f;
 
@@ -86,4 +116,8 @@ private:
     void  recomputeAllNormals();
     void  updateStats();
     void  uploadVertices(bool fullReupload = true);
+    void  uploadSplat();
+    void  initTextureLayers();   // procedural default textures + splat
+    static GLuint makeProceduralTexture(const glm::vec3& baseColor, float variation);
+    static GLuint loadTextureFile(const std::string& path);
 };

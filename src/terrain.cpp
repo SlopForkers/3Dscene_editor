@@ -1,8 +1,11 @@
 #include "terrain.h"
+#include "shader.h"
+#include <stb_image.h>
 #include <cmath>
 #include <algorithm>
 #include <iostream>
 #include <random>
+#include <cstdio>
 
 Terrain::Terrain(int gridX, int gridZ, float worldSize)
     : gridX_(gridX), gridZ_(gridZ), worldSize_(worldSize) {
@@ -53,12 +56,21 @@ void Terrain::create() {
 
     glBindVertexArray(0);
     dirty_ = false;
+
+    initTextureLayers();
 }
 
 void Terrain::destroy() {
     if (vao_) { glDeleteVertexArrays(1, &vao_); vao_ = 0; }
     if (vbo_) { glDeleteBuffers(1, &vbo_); vbo_ = 0; }
     if (ebo_) { glDeleteBuffers(1, &ebo_); ebo_ = 0; }
+    if (splatTex_) { glDeleteTextures(1, &splatTex_); splatTex_ = 0; }
+    for (auto& l : layers_) {
+        if (l.albedo) { glDeleteTextures(1, &l.albedo); l.albedo = 0; }
+        if (l.normal) { glDeleteTextures(1, &l.normal); l.normal = 0; }
+    }
+    layers_.clear();
+    splat_.clear();
 }
 
 float Terrain::getH(int ix, int iz) const {
@@ -102,6 +114,35 @@ bool Terrain::applyBrush(const BrushParams& bp, const glm::vec3& worldPos) {
     if (x0 > x1 || z0 > z1) return false;
 
     bool changed = false;
+
+    if (bp.type == BrushParams::Texture) {
+        // Splat painting: increase the weight of the selected layer under the
+        // brush and renormalise the RGBA weights so they keep summing to ~1.
+        int layer = std::clamp(bp.textureLayer, 0, 3);
+        if (layers_.empty()) return false;
+        float add = std::clamp(bp.strength, 0.0f, 1.0f);
+        for (int iz = z0; iz <= z1; ++iz) {
+            for (int ix = x0; ix <= x1; ++ix) {
+                float wx = worldX(ix);
+                float wz = worldZ(iz);
+                float d = std::sqrt((wx - worldPos.x) * (wx - worldPos.x) +
+                                    (wz - worldPos.z) * (wz - worldPos.z));
+                float f = falloff(d, r, bp.falloff);
+                if (f <= 0.0f) continue;
+                uint8_t* px = &splat_[idx(ix, iz) * 4];
+                float w[4] = { px[0] / 255.0f, px[1] / 255.0f,
+                               px[2] / 255.0f, px[3] / 255.0f };
+                w[layer] += f * add;
+                float s = w[0] + w[1] + w[2] + w[3];
+                if (s > 1e-4f) { for (int k = 0; k < 4; ++k) w[k] /= s; }
+                for (int k = 0; k < 4; ++k)
+                    px[k] = (uint8_t)std::clamp(w[k] * 255.0f, 0.0f, 255.0f);
+                changed = true;
+            }
+        }
+        if (changed) uploadSplat();
+        return changed;
+    }
 
     if (bp.type == BrushParams::Smooth) {
         // Two-pass: snapshot the affected region first.
@@ -351,4 +392,153 @@ bool Terrain::raycast(const glm::vec3& rayOrigin, const glm::vec3& rayDir,
         prevDiff = curDiff;
     }
     return false;
+}
+
+// ---------------------------------------------------------------------------
+// Texture layers + splatmap
+// ---------------------------------------------------------------------------
+
+GLuint Terrain::makeProceduralTexture(const glm::vec3& baseColor, float variation) {
+    const int W = 64, H = 64;
+    std::vector<uint8_t> data(W * H * 3);
+    std::mt19937 rng(12345);
+    std::uniform_real_distribution<float> dist(-variation, variation);
+    for (int i = 0; i < W * H; ++i) {
+        float n = dist(rng);
+        // Add a low-frequency blotch for a less uniform look.
+        int x = i % W, y = i / W;
+        float blotch = std::sin(x * 0.3f) * std::cos(y * 0.25f) * variation * 0.5f;
+        data[i * 3 + 0] = (uint8_t)std::clamp((baseColor.r + n + blotch) * 255.0f, 0.0f, 255.0f);
+        data[i * 3 + 1] = (uint8_t)std::clamp((baseColor.g + n + blotch) * 255.0f, 0.0f, 255.0f);
+        data[i * 3 + 2] = (uint8_t)std::clamp((baseColor.b + n + blotch) * 255.0f, 0.0f, 255.0f);
+    }
+    GLuint tex = 0;
+    glGenTextures(1, &tex);
+    glBindTexture(GL_TEXTURE_2D, tex);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, W, H, 0, GL_RGB, GL_UNSIGNED_BYTE, data.data());
+    glGenerateMipmap(GL_TEXTURE_2D);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glBindTexture(GL_TEXTURE_2D, 0);
+    return tex;
+}
+
+GLuint Terrain::loadTextureFile(const std::string& path) {
+    int w = 0, h = 0, ch = 0;
+    stbi_uc* pixels = stbi_load(path.c_str(), &w, &h, &ch, 4);
+    if (!pixels) {
+        std::cerr << "Terrain: failed to load texture: " << path << "\n";
+        return 0;
+    }
+    GLuint tex = 0;
+    glGenTextures(1, &tex);
+    glBindTexture(GL_TEXTURE_2D, tex);
+    glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, w, h, 0, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
+    glGenerateMipmap(GL_TEXTURE_2D);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glBindTexture(GL_TEXTURE_2D, 0);
+    stbi_image_free(pixels);
+    return tex;
+}
+
+void Terrain::initTextureLayers() {
+    // Four procedural layers so the terrain is paintable immediately.
+    layers_.clear();
+    layers_.resize(4);
+    layers_[0].name = "Grass";  layers_[0].albedo = makeProceduralTexture(glm::vec3(0.30f, 0.55f, 0.28f), 0.10f);
+    layers_[1].name = "Dirt";   layers_[1].albedo = makeProceduralTexture(glm::vec3(0.38f, 0.26f, 0.16f), 0.08f);
+    layers_[2].name = "Rock";   layers_[2].albedo = makeProceduralTexture(glm::vec3(0.45f, 0.45f, 0.48f), 0.12f);
+    layers_[3].name = "Sand";   layers_[3].albedo = makeProceduralTexture(glm::vec3(0.76f, 0.70f, 0.50f), 0.06f);
+    layers_[0].tileSize = 8.0f;
+    layers_[1].tileSize = 8.0f;
+    layers_[2].tileSize = 6.0f;
+    layers_[3].tileSize = 10.0f;
+
+    // Splat: layer 0 (grass) everywhere by default.
+    splat_.assign((size_t)gridX_ * gridZ_ * 4, 0);
+    for (size_t i = 0; i < (size_t)gridX_ * gridZ_; ++i)
+        splat_[i * 4 + 0] = 255;   // R = grass full weight
+
+    glGenTextures(1, &splatTex_);
+    glBindTexture(GL_TEXTURE_2D, splatTex_);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, gridX_, gridZ_, 0, GL_RGBA, GL_UNSIGNED_BYTE, splat_.data());
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glBindTexture(GL_TEXTURE_2D, 0);
+}
+
+void Terrain::uploadSplat() {
+    if (!splatTex_) return;
+    glBindTexture(GL_TEXTURE_2D, splatTex_);
+    glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, gridX_, gridZ_, GL_RGBA, GL_UNSIGNED_BYTE, splat_.data());
+    glBindTexture(GL_TEXTURE_2D, 0);
+}
+
+void Terrain::resetSplat() {
+    splat_.assign((size_t)gridX_ * gridZ_ * 4, 0);
+    for (size_t i = 0; i < (size_t)gridX_ * gridZ_; ++i)
+        splat_[i * 4 + 0] = 255;
+    uploadSplat();
+}
+
+bool Terrain::loadLayerAlbedo(int layerIndex, const std::string& path) {
+    if (layerIndex < 0 || layerIndex >= (int)layers_.size()) return false;
+    GLuint t = loadTextureFile(path);
+    if (!t) return false;
+    if (layers_[layerIndex].albedo) glDeleteTextures(1, &layers_[layerIndex].albedo);
+    layers_[layerIndex].albedo = t;
+    return true;
+}
+
+bool Terrain::loadLayerNormal(int layerIndex, const std::string& path) {
+    if (layerIndex < 0 || layerIndex >= (int)layers_.size()) return false;
+    GLuint t = loadTextureFile(path);
+    if (!t) return false;
+    if (layers_[layerIndex].normal) glDeleteTextures(1, &layers_[layerIndex].normal);
+    layers_[layerIndex].normal = t;
+    layers_[layerIndex].hasNormal = true;
+    return true;
+}
+
+void Terrain::setLayerTileSize(int layerIndex, float tileSize) {
+    if (layerIndex < 0 || layerIndex >= (int)layers_.size()) return;
+    layers_[layerIndex].tileSize = std::max(0.25f, tileSize);
+}
+
+void Terrain::bindTextures(const Shader& shader) const {
+    if (layers_.empty() || !splatTex_) return;
+    // Splat at unit 8.
+    glActiveTexture(GL_TEXTURE8);
+    glBindTexture(GL_TEXTURE_2D, splatTex_);
+    shader.setInt("uSplat", 8);
+
+    // Layer albedo at units 9..12, normals at 13..16.
+    for (int i = 0; i < 4 && i < (int)layers_.size(); ++i) {
+        char uname[32];
+        glActiveTexture(GL_TEXTURE9 + i);
+        glBindTexture(GL_TEXTURE_2D, layers_[i].albedo ? layers_[i].albedo : 0);
+        std::snprintf(uname, sizeof(uname), "uLayerTex%d", i);
+        shader.setInt(uname, 9 + i);
+
+        glActiveTexture(GL_TEXTURE13 + i);
+        glBindTexture(GL_TEXTURE_2D, layers_[i].normal ? layers_[i].normal : 0);
+        std::snprintf(uname, sizeof(uname), "uLayerNormal%d", i);
+        shader.setInt(uname, 13 + i);
+
+        std::snprintf(uname, sizeof(uname), "uTileSize%d", i);
+        shader.setFloat(uname, layers_[i].tileSize);
+        std::snprintf(uname, sizeof(uname), "uHasLayerNormal%d", i);
+        shader.setBool(uname, layers_[i].hasNormal);
+    }
+    shader.setInt("uLayerCount", (int)layers_.size());
+    shader.setFloat("uTerrainSize", worldSize_);
+    glActiveTexture(GL_TEXTURE0);
 }

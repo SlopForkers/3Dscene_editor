@@ -10,6 +10,8 @@
 #include <iostream>
 #include <cmath>
 #include <filesystem>
+#include <algorithm>
+#include <cstdio>
 
 static glm::vec3 lightDirFromAngles(float azimuth, float elevation) {
     float ce = std::cos(elevation);
@@ -342,9 +344,8 @@ void App::renderScene() {
     glm::vec3 lightDir = lightDirFromAngles(lightAzimuth_, lightElevation_);
     terrainShader_.setVec3("uLightDir", lightDir);
     terrainShader_.setVec3("uCamPos", camera_.position());
-    terrainShader_.setVec3("uBaseColor", glm::vec3(0.30f, 0.55f, 0.28f));
-    terrainShader_.setVec3("uLowColor",  glm::vec3(0.20f, 0.18f, 0.14f));
     terrainShader_.setFloat("uMaxHeight", std::max(1.0f, terrain_.maxHeight()));
+    terrain_.bindTextures(terrainShader_);
 
     terrain_.draw();
 
@@ -396,6 +397,7 @@ static const char* brushTypeName(int t) {
         case Terrain::BrushParams::Flatten: return "Flatten";
         case Terrain::BrushParams::Noise:   return "Noise";
         case Terrain::BrushParams::Set:     return "Set Height";
+        case Terrain::BrushParams::Texture: return "Texture";
         default: return "?";
     }
 }
@@ -429,16 +431,16 @@ void App::drawMainPanel() {
     if (ImGui::BeginTabBar("##tabs", ImGuiTabBarFlags_None)) {
         // ---- Brush tab ----
         if (ImGui::BeginTabItem("Brush")) {
-            const char* names[] = { "Raise", "Lower", "Smooth", "Flatten", "Noise", "Set Height" };
-            for (int i = 0; i < 6; ++i) {
+            const char* names[] = { "Raise", "Lower", "Smooth", "Flatten", "Noise", "Set H", "Texture" };
+            for (int i = 0; i < 7; ++i) {
                 bool sel = (brush_.type == i);
                 if (ImGui::RadioButton(names[i], sel)) brush_.type = (Terrain::BrushParams::Type)i;
-                if (i < 4 && (i + 1) % 2 != 0) ImGui::SameLine();
+                if ((i + 1) % 4 != 0) ImGui::SameLine();
             }
             ImGui::Separator();
 
             ImGui::SliderFloat("Radius",   &brush_.radius,   1.0f, terrain_.worldSize() * 0.4f, "%.1f");
-            ImGui::SliderFloat("Strength", &brush_.strength,  0.01f, 5.0f, "%.2f");
+            ImGui::SliderFloat("Strength", &brush_.strength, 0.01f, 5.0f, "%.2f");
 
             const char* fnames[] = { "Smooth", "Linear", "Constant" };
             ImGui::Combo("Falloff", &brush_.falloff, fnames, 3);
@@ -449,7 +451,49 @@ void App::drawMainPanel() {
                                    -20.0f, 40.0f, "%.1f");
             }
 
+            if (brush_.type == Terrain::BrushParams::Texture) {
+                ImGui::Separator();
+                ImGui::Text("Texture layer:");
+                for (int i = 0; i < terrain_.layerCount(); ++i) {
+                    bool sel = (brush_.textureLayer == i);
+                    const std::string& ln = terrain_.layers()[i].name;
+                    if (ImGui::RadioButton(ln.c_str(), sel)) brush_.textureLayer = i;
+                    if ((i + 1) % 2 != 0) ImGui::SameLine();
+                }
+                // Texture brush strength should stay in a sane 0..1 range.
+                brush_.strength = std::clamp(brush_.strength, 0.01f, 1.0f);
+            }
+
             if (brush_.radius != 0.0f) brushCursor_.setShape(brush_.radius);
+            ImGui::EndTabItem();
+        }
+
+        // ---- Textures tab ----
+        if (ImGui::BeginTabItem("Textures")) {
+            for (int i = 0; i < terrain_.layerCount(); ++i) {
+                const auto& l = terrain_.layers()[i];
+                ImGui::PushID(i);
+                ImGui::Text("%d: %s", i, l.name.c_str());
+                if (l.albedo) {
+                    ImGui::SameLine();
+                    ImGui::Image((ImTextureID)(intptr_t)l.albedo, ImVec2(48, 48));
+                }
+                if (ImGui::Button("Albedo...")) {
+                    std::string p = openFileDialog("Image", "*.png;*.jpg;*.jpeg;*.tga;*.bmp");
+                    if (!p.empty()) terrain_.loadLayerAlbedo(i, p);
+                }
+                ImGui::SameLine();
+                if (ImGui::Button("Normal...")) {
+                    std::string p = openFileDialog("Image", "*.png;*.jpg;*.jpeg;*.tga;*.bmp");
+                    if (!p.empty()) terrain_.loadLayerNormal(i, p);
+                }
+                float ts = l.tileSize;
+                if (ImGui::SliderFloat("Tile size", &ts, 0.5f, 64.0f, "%.1f"))
+                    terrain_.setLayerTileSize(i, ts);
+                ImGui::PopID();
+                ImGui::Separator();
+            }
+            if (ImGui::Button("Reset Splat")) terrain_.resetSplat();
             ImGui::EndTabItem();
         }
 
