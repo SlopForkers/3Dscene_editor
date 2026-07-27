@@ -9,7 +9,7 @@
 class Terrain {
 public:
     struct BrushParams {
-        enum Type { Raise = 0, Lower, Smooth, Flatten, Noise, Set, Texture };
+        enum Type { Raise = 0, Lower, Smooth, Flatten, Noise, Set, Texture, Vegetation };
         Type type = Raise;
         float radius   = 12.0f;   // world units
         float strength = 0.25f;   // height units per stroke step

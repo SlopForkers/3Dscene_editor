@@ -607,3 +607,64 @@ void Model::render(const Shader& shader) const {
     glDisable(GL_BLEND);
     glEnable(GL_CULL_FACE);
 }
+
+void Model::renderInstanced(const Shader& shader, GLuint instanceVbo,
+                            int instanceCount) const {
+    if (!loaded_ || instanceCount <= 0) return;
+    shader.setBool("uInstanced", true);
+    for (const auto& P : primitives_) {
+        if (P.nodeIndex < 0) continue;
+
+        const Material* mat = (P.materialIndex >= 0 && P.materialIndex < (int)materials_.size())
+                              ? &materials_[P.materialIndex] : nullptr;
+
+        glm::mat4 effectiveModel;
+        if (P.skinIndex >= 0 && P.skinIndex < (int)skins_.size()) {
+            const Skin& s = skins_[P.skinIndex];
+            GLint loc = glGetUniformLocation(shader.id(), "uJointMatrices[0]");
+            if (loc >= 0) {
+                glUniformMatrix4fv(loc, (GLsizei)s.jointMatrices.size(), GL_FALSE,
+                                   (const GLfloat*)s.jointMatrices.data());
+            }
+            shader.setBool("uHasSkin", true);
+            effectiveModel = glm::mat4(1.0f);
+        } else {
+            shader.setBool("uHasSkin", false);
+            effectiveModel = nodes_[P.nodeIndex].global;
+        }
+        shader.setMat4("uModel", effectiveModel);
+
+        if (mat) applyMaterial(*mat, shader, glm::vec3(0), glm::vec3(0));
+        else {
+            shader.setBool("uUnlit", false);
+            shader.setBool("uDoubleSided", false);
+            shader.setInt("uAlphaMode", 0);
+            shader.setBool("uHasBaseColorTex", false);
+            shader.setVec4("uBaseColorFactor", glm::vec4(0.8f));
+            glDisable(GL_BLEND);
+            glEnable(GL_CULL_FACE);
+        }
+
+        glBindVertexArray(P.vao);
+        // Attach instance buffer as mat4 at locations 6..9 with divisor 1.
+        glBindBuffer(GL_ARRAY_BUFFER, instanceVbo);
+        for (int c = 0; c < 4; ++c) {
+            glEnableVertexAttribArray(6 + c);
+            glVertexAttribPointer(6 + c, 4, GL_FLOAT, GL_FALSE, sizeof(glm::mat4),
+                                   (void*)(sizeof(glm::vec4) * c));
+            glVertexAttribDivisor(6 + c, 1);
+        }
+
+        glDrawElementsInstanced(GL_TRIANGLES, P.indexCount, P.indexType, 0,
+                                instanceCount);
+
+        for (int c = 0; c < 4; ++c) {
+            glDisableVertexAttribArray(6 + c);
+            glVertexAttribDivisor(6 + c, 0);
+        }
+        glBindVertexArray(0);
+    }
+    shader.setBool("uInstanced", false);
+    glDisable(GL_BLEND);
+    glEnable(GL_CULL_FACE);
+}

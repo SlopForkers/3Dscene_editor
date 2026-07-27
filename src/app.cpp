@@ -108,6 +108,7 @@ bool App::initOpenGL() {
     gizmo_.create();
     skybox_.create();
     vertexEditor_.create();
+    details_.create();
 
     // Unit-cube wireframe (24 vertices, 12 edges) for prop selection boxes.
     {
@@ -154,6 +155,7 @@ void App::shutdown() {
         terrain_.destroy();
         skybox_.destroy();
         vertexEditor_.destroy();
+        details_.destroy();
         if (boxVao_) { glDeleteVertexArrays(1, &boxVao_); boxVao_ = 0; }
         if (boxVbo_) { glDeleteBuffers(1, &boxVbo_); boxVbo_ = 0; }
         props_.clear();
@@ -317,11 +319,24 @@ void App::handleInput(float dt) {
             camera_.screenToRay((float)sx, (float)sy, origin, dir);
             glm::vec3 hit;
             if (terrain_.raycast(origin, dir, hit)) {
-                float amount = continuousStroke_ ? brush_.strength * dt * 60.0f
-                                                  : brush_.strength;
-                Terrain::BrushParams step = brush_;
-                step.strength = amount;
-                terrain_.applyBrush(step, hit);
+                if (brush_.type == Terrain::BrushParams::Vegetation) {
+                    bool erase = g_input.keyDown(GLFW_KEY_LEFT_CONTROL) ||
+                                 g_input.keyDown(GLFW_KEY_RIGHT_CONTROL);
+                    float density = continuousStroke_
+                        ? brush_.strength * dt * 60.0f
+                        : brush_.strength;
+                    details_.paint(terrain_, hit, brush_.radius, density, erase);
+                } else {
+                    float amount = continuousStroke_ ? brush_.strength * dt * 60.0f
+                                                      : brush_.strength;
+                    Terrain::BrushParams step = brush_;
+                    step.strength = amount;
+                    bool changed = terrain_.applyBrush(step, hit);
+                    // Keep painted details glued to the edited heightfield.
+                    if (changed) {
+                        details_.reproject(terrain_, hit, brush_.radius * 1.5f);
+                    }
+                }
                 lastPaintPoint_ = hit;
                 hasPaintPoint_ = true;
             }
@@ -376,6 +391,9 @@ void App::handleInput(float dt) {
     if (g_input.keyPressed(GLFW_KEY_3)) brush_.type = Terrain::BrushParams::Smooth;
     if (g_input.keyPressed(GLFW_KEY_4)) brush_.type = Terrain::BrushParams::Flatten;
     if (g_input.keyPressed(GLFW_KEY_5)) brush_.type = Terrain::BrushParams::Noise;
+    if (g_input.keyPressed(GLFW_KEY_6)) brush_.type = Terrain::BrushParams::Set;
+    if (g_input.keyPressed(GLFW_KEY_7)) brush_.type = Terrain::BrushParams::Texture;
+    if (g_input.keyPressed(GLFW_KEY_8)) brush_.type = Terrain::BrushParams::Vegetation;
     if (g_input.keyPressed(GLFW_KEY_F)) wireframe_ = !wireframe_;
     if (g_input.keyPressed(GLFW_KEY_H)) showHelp_ = !showHelp_;
 
@@ -431,6 +449,11 @@ void App::renderScene() {
     if (props_.count() > 0) {
         propShader_.use();
         props_.render(propShader_, vp, lightDir, camera_.position());
+    }
+    // Instanced details (vegetation/rocks/etc.), painted with the Vegetation brush.
+    if (details_.instanceCount() > 0) {
+        propShader_.use();
+        details_.render(propShader_, vp, lightDir, camera_.position());
     }
     // Selection box for the currently selected prop.
     drawSelectionBox();
@@ -494,6 +517,7 @@ static const char* brushTypeName(int t) {
         case Terrain::BrushParams::Noise:   return "Noise";
         case Terrain::BrushParams::Set:     return "Set Height";
         case Terrain::BrushParams::Texture: return "Texture";
+        case Terrain::BrushParams::Vegetation: return "Vegetation";
         default: return "?";
     }
 }
@@ -601,6 +625,21 @@ static void Texture(ImDrawList* dl, ImVec2 p0, ImVec2 p1, ImU32 col) {
     dl->AddLine(ImVec2(cx, y0), ImVec2(cx, y1), col, sw);
     dl->AddLine(ImVec2(x0, cy), ImVec2(x1, cy), col, sw);
 }
+static void Vegetation(ImDrawList* dl, ImVec2 p0, ImVec2 p1, ImU32 col) {
+    float cx = (p0.x + p1.x) * 0.5f;
+    float baseY = p1.y - (p1.y - p0.y) * 0.20f;
+    float topY  = p0.y + (p1.y - p0.y) * 0.20f;
+    float w = (p1.x - p0.x) * 0.05f;
+    // Trunk
+    dl->AddRectFilled(ImVec2(cx - w, baseY), ImVec2(cx + w, baseY - (baseY - topY) * 0.4f), col);
+    // Canopy (triangle)
+    float cw = (p1.x - p0.x) * 0.26f;
+    float cyTop = topY + (baseY - topY) * 0.4f;
+    float cyBot = baseY - (baseY - topY) * 0.4f;
+    dl->AddTriangleFilled(ImVec2(cx, cyTop - cw * 0.5f),
+                          ImVec2(cx - cw, cyBot),
+                          ImVec2(cx + cw, cyBot), col);
+}
 
 static void CatBrush(ImDrawList* dl, ImVec2 p0, ImVec2 p1, ImU32 col) {
     float x0 = p0.x + (p1.x - p0.x) * 0.25f, x1 = p1.x - (p1.x - p0.x) * 0.25f;
@@ -695,6 +734,7 @@ static IconFn brushIcon(int type) {
         case Terrain::BrushParams::Noise:    return &Noise;
         case Terrain::BrushParams::Set:      return &SetHeight;
         case Terrain::BrushParams::Texture:  return &Texture;
+        case Terrain::BrushParams::Vegetation: return &Vegetation;
         default: return nullptr;
     }
 }
@@ -819,7 +859,7 @@ void App::drawBrushBar() {
     const float cellSize = 44.0f;
     const float gap = 4.0f;
     const float pad = 8.0f;
-    const int count = 7;
+    const int count = 8;
     float totalW = float(count) * cellSize + float(count - 1) * gap + 2 * pad;
     float x = float(fbWidth_) * 0.5f - totalW * 0.5f;
     float y = float(fbHeight_) - cellSize - 2 * pad - 14.0f;
@@ -837,7 +877,7 @@ void App::drawBrushBar() {
     const ImVec2 wPos = ImGui::GetWindowPos();
     const float iconPad = 7.0f;
     const char* names[] = { "Raise", "Lower", "Smooth", "Flatten",
-                            "Noise", "Set Height", "Texture" };
+                            "Noise", "Set Height", "Texture", "Vegetation" };
 
     for (int i = 0; i < count; ++i) {
         ImVec2 p0 = ImVec2(wPos.x + pad + float(i) * (cellSize + gap),
@@ -896,6 +936,17 @@ void App::drawBrushContent() {
             if ((i + 1) % 2 != 0) ImGui::SameLine();
         }
         brush_.strength = std::clamp(brush_.strength, 0.01f, 1.0f);
+    }
+    if (brush_.type == Terrain::BrushParams::Vegetation) {
+        ImGui::Separator();
+        ImGui::TextWrapped("Open the Vegetation panel (rail) to import models "
+                           "and pick which one to paint.");
+        ImGui::Text("Active prototype: %s",
+                    details_.activePrototype() >= 0
+                        ? details_.prototype(details_.activePrototype()).name.c_str()
+                        : "(none)");
+        ImGui::Text("Instances: %d", details_.instanceCount());
+        brush_.strength = std::clamp(brush_.strength, 0.05f, 2.0f);
     }
     if (brush_.radius != 0.0f) brushCursor_.setShape(brush_.radius);
 }
@@ -1096,7 +1147,7 @@ void App::drawHelpOverlay() {
         ImGui::Separator();
         ImGui::TextUnformatted("Brush tool:");
         ImGui::BulletText("Left-drag: paint terrain");
-        ImGui::BulletText("1..5: brush type");
+        ImGui::BulletText("1..8: brush type");
     } else if (toolMode_ == ToolProp) {
         ImGui::Separator();
         ImGui::TextUnformatted("Prop tool:");

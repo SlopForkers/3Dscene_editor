@@ -9,6 +9,7 @@
 #include "gizmo.h"
 #include "skybox.h"
 #include "vertex_edit.h"
+#include "detail.h"
 #include <memory>
 #include <string>
 #include <vector>
@@ -25,8 +26,8 @@ public:
     // Left-rail categories (group tool modes and setting panels). Public so
     // the file-scope icon helpers in app.cpp can switch on them.
     enum Category {
-        CatBrush = 0, CatVertex, CatProps,   // tool categories (switch toolMode)
-        CatTerrain, CatLayers, CatEnv, CatView,  // setting categories
+        CatBrush = 0, CatVertex, CatProps, CatVegetation,  // tool categories
+        CatTerrain, CatLayers, CatEnv, CatView,            // setting categories
         CatCount
     };
 
@@ -49,6 +50,7 @@ private:
     void drawBrushContent();
     void drawVertexContent();
     void drawPropsContent();
+    void drawVegetationContent();
     void drawTerrainContent();
     void drawLayersContent();
     void drawEnvContent();
@@ -121,6 +123,9 @@ private:
     // Shared model library keeps loaded models alive while referenced by props.
     std::vector<std::shared_ptr<Model>> modelLibrary_;
     float propTargetSize_ = 6.0f;
+
+    // Detail/vegetation system (instanced painting).
+    DetailSystem details_;
 
     // Selection box wireframe VAO/VBO (unit cube, reused per frame).
     GLuint boxVao_ = 0, boxVbo_ = 0;

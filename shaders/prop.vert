@@ -5,12 +5,15 @@ layout(location = 2) in vec4 aTangent;
 layout(location = 3) in vec2 aUv;
 layout(location = 4) in vec4 aJoints;
 layout(location = 5) in vec4 aWeights;
+// Instanced world matrix (4 columns at locations 6-9, divisor 1).
+layout(location = 6) in mat4 aInstance;
 
 uniform mat4 uViewProj;
 uniform mat4 uInstance;   // prop world transform (placement)
 uniform mat4 uModel;      // node global transform within the model
 uniform mat4 uJointMatrices[256];
 uniform int  uHasSkin;
+uniform int  uInstanced;  // 1 = use aInstance attribute, 0 = use uInstance uniform
 
 out vec3 vNormal;
 out vec2 vUv;
@@ -31,10 +34,10 @@ void main() {
         nrm = skinMat * nrm;
     }
 
-    vec4 world = uInstance * uModel * pos;
+    vec4 world = (uInstanced == 1 ? aInstance : uInstance) * uModel * pos;
     vWorldPos = world.xyz;
 
-    mat3 worldMat = mat3(uInstance * uModel);
+    mat3 worldMat = mat3((uInstanced == 1 ? aInstance : uInstance) * uModel);
     mat3 normalMat = transpose(inverse(worldMat));
     vNormal = normalize(normalMat * nrm.xyz);
     vUv = aUv;

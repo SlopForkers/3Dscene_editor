@@ -140,6 +140,8 @@ set(SOURCES
     src/skybox.h
     src/vertex_edit.cpp
     src/vertex_edit.h
+    src/detail.cpp
+    src/detail.h
 )
 
 add_executable(scene_editor ${SOURCES})

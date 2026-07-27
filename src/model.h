@@ -25,6 +25,11 @@ public:
     // (except per-primitive material uniforms, which this sets per primitive).
     void render(const class Shader& shader) const;
 
+    // Render the model with hardware instancing. instanceVbo holds an array of
+    // mat4 world matrices (one per instance). Uses glDrawElementsInstanced.
+    void renderInstanced(const class Shader& shader, GLuint instanceVbo,
+                         int instanceCount) const;
+
     // Axis-aligned bounding box in model space (min/max corners).
     glm::vec3 aabbMin() const { return aabbMin_; }
     glm::vec3 aabbMax() const { return aabbMax_; }
