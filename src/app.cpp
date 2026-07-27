@@ -183,6 +183,17 @@ int App::run(const std::vector<std::string>& importArgs) {
         if (extl == ".hdr" || extl == ".png" || extl == ".jpg" ||
             extl == ".jpeg" || extl == ".tga" || extl == ".bmp") {
             skybox_.loadEquirect(skyboxConvertShader_, p);
+        } else if (extl == ".scene") {
+            loadScene(p);
+        } else if (extl == ".savetest") {
+            std::string out = p.substr(0, dot) + ".scene";
+            saveScene(out);
+            // Immediately reload to verify round-trip.
+            terrain_.flatten(0.0f);
+            props_.clear();
+            details_.clearInstances();
+            details_.clearPrototypes();
+            loadScene(out);
         } else {
             importModel(p);
         }
@@ -735,6 +746,19 @@ static void CatView(ImDrawList* dl, ImVec2 p0, ImVec2 p1, ImU32 col) {
                        ImVec2(c.x - w * 0.5f, c.y + h), ImVec2(c.x - w, c.y), col, 2.5f);
     dl->AddCircleFilled(c, h * 0.6f, col);
 }
+static void CatFile(ImDrawList* dl, ImVec2 p0, ImVec2 p1, ImU32 col) {
+    float x0 = p0.x + (p1.x - p0.x) * 0.22f;
+    float x1 = p1.x - (p1.x - p0.x) * 0.22f;
+    float y0 = p0.y + (p1.y - p0.y) * 0.25f;
+    float y1 = p1.y - (p1.y - p0.y) * 0.25f;
+    float w = 1.5f;
+    // Folder shape.
+    dl->AddRectFilled(ImVec2(x0, y0), ImVec2(x1, y1), col, 3.0f);
+    dl->AddRect(ImVec2(x0, y0), ImVec2(x1, y1), IM_COL32(0, 0, 0, 80), 3.0f, 0, w);
+    // Folder tab.
+    dl->AddRectFilled(ImVec2(x0, y0 - (y1 - y0) * 0.3f),
+                       ImVec2(x0 + (x1 - x0) * 0.4f, y0), col, 3.0f);
+}
 
 typedef void (*IconFn)(ImDrawList*, ImVec2, ImVec2, ImU32);
 static IconFn brushIcon(int type) {
@@ -760,6 +784,7 @@ static IconFn catIcon(int cat) {
         case App::CatLayers:     return &CatLayers;
         case App::CatEnv:        return &CatEnv;
         case App::CatView:       return &CatView;
+        case App::CatFile:       return &CatFile;
         default: return nullptr;
     }
 }
@@ -772,7 +797,8 @@ static const char* catName(int cat) {
         case App::CatTerrain:    return "Terrain";
         case App::CatLayers:   return "Layers";
         case App::CatEnv:      return "Environment";
-        case App::CatView:     return "View";
+        case App::CatView:       return "View";
+        case App::CatFile:       return "File";
         default: return "?";
     }
 }
@@ -836,10 +862,11 @@ void App::drawLeftPanel() {
     // --- Rail (left column, full height) ---
     ImGui::BeginChild("##rail", ImVec2(railW, 0), true, ImGuiWindowFlags_NoScrollbar);
     ImVec2 railStart = ImGui::GetCursorScreenPos();
-    int order[CatCount + 1] = { CatBrush, CatVertex, CatProps, CatVegetation, -1,
-                                 CatTerrain, CatLayers, CatEnv, CatView };
+    int order[CatCount + 2] = { CatBrush, CatVertex, CatProps, CatVegetation, -1,
+                                 CatTerrain, CatLayers, CatEnv, CatView, -1,
+                                 CatFile };
     ImVec2 cursor = railStart;
-    for (int o = 0; o < CatCount + 1; ++o) {
+    for (int o = 0; o < CatCount + 2; ++o) {
         int cat = order[o];
         ImVec2 p0 = cursor;
         ImVec2 p1 = ImVec2(p0.x + railW - 2 * cellPad, p0.y + cellH);
@@ -868,6 +895,7 @@ void App::drawLeftPanel() {
         case CatLayers:     drawLayersContent();      break;
         case CatEnv:        drawEnvContent();         break;
         case CatView:       drawViewContent();        break;
+        case CatFile:       drawFileContent();        break;
     }
     ImGui::EndChild();
 
@@ -1240,6 +1268,44 @@ void App::drawViewContent() {
         camera_ = Camera();
         camera_.setViewport(fbWidth_, fbHeight_);
     }
+}
+
+void App::drawFileContent() {
+    ImGui::TextDisabled("File");
+    ImGui::Separator();
+
+    if (ImGui::Button("Save Scene...")) {
+        std::string path = saveFileDialog("Scene", "*.scene");
+        std::cerr << "[UI] saveFileDialog returned: '" << path << "'\n";
+        if (!path.empty()) {
+            // Ensure .scene extension.
+            if (path.find(".scene") == std::string::npos) path += ".scene";
+            std::cerr << "[UI] saveScene path: '" << path << "'\n";
+            if (!saveScene(path))
+                std::cerr << "Save failed: " << path << "\n";
+        }
+    }
+    if (ImGui::Button("Load Scene...")) {
+        std::string path = openFileDialog("Scene", "*.scene");
+        if (!path.empty()) {
+            if (!loadScene(path))
+                std::cerr << "Load failed: " << path << "\n";
+        }
+    }
+
+    ImGui::Separator();
+    ImGui::TextDisabled("Scene contents");
+    ImGui::Text("Props:      %d", props_.count());
+    ImGui::Text("Details:    %d", details_.instanceCount());
+    ImGui::Text("Terrain:    %d x %d (%.0f m)", terrain_.gridX(), terrain_.gridZ(),
+                terrain_.worldSize());
+    ImGui::Text("Layers:     %d", terrain_.layerCount());
+    ImGui::Text("Skybox:     %s", skybox_.isDefault() ? "procedural" : "imported");
+
+    ImGui::Separator();
+    ImGui::TextWrapped("Scene format: .scene (JSON metadata) + "
+                       "_heights.bin + _splat.bin in the same folder. "
+                       "Asset paths are stored relative to the scene file.");
 }
 
 

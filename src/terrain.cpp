@@ -523,6 +523,7 @@ bool Terrain::loadLayerAlbedo(int layerIndex, const std::string& path) {
     if (!t) return false;
     if (layers_[layerIndex].albedo) glDeleteTextures(1, &layers_[layerIndex].albedo);
     layers_[layerIndex].albedo = t;
+    layers_[layerIndex].albedoPath = path;
     return true;
 }
 
@@ -533,6 +534,7 @@ bool Terrain::loadLayerNormal(int layerIndex, const std::string& path) {
     if (layers_[layerIndex].normal) glDeleteTextures(1, &layers_[layerIndex].normal);
     layers_[layerIndex].normal = t;
     layers_[layerIndex].hasNormal = true;
+    layers_[layerIndex].normalPath = path;
     return true;
 }
 
@@ -569,4 +571,18 @@ void Terrain::bindTextures(const Shader& shader) const {
     shader.setInt("uLayerCount", (int)layers_.size());
     shader.setFloat("uTerrainSize", worldSize_);
     glActiveTexture(GL_TEXTURE0);
+}
+
+void Terrain::setHeights(const std::vector<float>& h) {
+    if ((int)h.size() != gridX_ * gridZ_) return;
+    heights_ = h;
+    recomputeAllNormals();
+    updateStats();
+    uploadVertices(true);
+}
+
+void Terrain::setSplat(const std::vector<uint8_t>& s) {
+    if ((int)s.size() != gridX_ * gridZ_ * 4) return;
+    splat_ = s;
+    uploadSplat();
 }

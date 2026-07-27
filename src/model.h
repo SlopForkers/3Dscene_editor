@@ -38,6 +38,7 @@ public:
 
     bool valid() const { return loaded_; }
     const std::string& name() const { return name_; }
+    const std::string& sourcePath() const { return sourcePath_; }
     int primitiveCount() const { return (int)primitives_.size(); }
     int skinCount() const { return (int)skins_.size(); }
 
@@ -114,6 +115,7 @@ private:
 
     bool loaded_ = false;
     std::string name_;
+    std::string sourcePath_;
 
     // Internal helpers.
     GLuint loadTextureFromImage(struct cgltf_image* image, const std::string& baseDir);

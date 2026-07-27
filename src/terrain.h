@@ -26,6 +26,8 @@ public:
         GLuint normal = 0;
         float  tileSize = 8.0f;   // world units per texture tile
         std::string name;
+        std::string albedoPath;
+        std::string normalPath;
         bool   hasNormal = false;
     };
 
@@ -86,6 +88,13 @@ public:
     bool loadLayerNormal(int layerIndex, const std::string& path);
     void setLayerTileSize(int layerIndex, float tileSize);
     void resetSplat();   // clear splat to layer 0 only
+
+    // Scene serialization accessors.
+    const std::vector<float>& heightsData() const { return heights_; }
+    const std::vector<uint8_t>& splatData() const { return splat_; }
+    void setHeights(const std::vector<float>& h);
+    void setSplat(const std::vector<uint8_t>& s);
+    void setLayerName(int i, const std::string& n) { if (i>=0&&i<(int)layers_.size()) layers_[i].name=n; }
 
     // Reset everything flat.
     void flatten(float height = 0.0f);

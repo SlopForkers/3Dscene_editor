@@ -207,6 +207,7 @@ bool Model::loadFromFile(const std::string& path) {
     std::string baseDir = fp.parent_path().string();
 
     name_ = fp.filename().string();
+    sourcePath_ = p;
 
     // --- Textures & materials ---
     materials_.resize(data->materials_count);

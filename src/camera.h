@@ -19,6 +19,8 @@ public:
     glm::vec3 position() const { return position_; }
     glm::vec3 target() const { return target_; }
     float distance() const { return distance_; }
+    float yaw() const { return yaw_; }
+    float pitch() const { return pitch_; }
 
     glm::mat4 view() const;
     glm::mat4 projection() const;
@@ -33,6 +35,9 @@ public:
 
     // Reposition freely (used when clicking terrain to follow etc.)
     void setTarget(const glm::vec3& t) { target_ = t; }
+    void setDistance(float d) { distance_ = d; updatePosition(); }
+    void setYaw(float y)       { yaw_ = y; updatePosition(); }
+    void setPitch(float p)     { pitch_ = p; updatePosition(); }
 
 private:
     void updatePosition();

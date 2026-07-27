@@ -32,12 +32,14 @@ void DetailSystem::destroy() {
 }
 
 int DetailSystem::addPrototype(std::shared_ptr<Model> model,
-                               const std::string& name, float targetSize) {
+                               const std::string& name, float targetSize,
+                               const std::string& sourcePath) {
     if (!model || !model->valid()) return -1;
     Prototype p;
     p.model = model;
     p.name = name.empty() ? ("Detail " + std::to_string(prototypes_.size() + 1)) : name;
     p.targetSize = targetSize;
+    p.sourcePath = sourcePath;
     prototypes_.push_back(p);
     if (activePrototype_ < 0) activePrototype_ = (int)prototypes_.size() - 1;
     return (int)prototypes_.size() - 1;

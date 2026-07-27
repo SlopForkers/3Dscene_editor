@@ -142,6 +142,8 @@ set(SOURCES
     src/vertex_edit.h
     src/detail.cpp
     src/detail.h
+    src/scene.cpp
+    src/scene.h
 )
 
 add_executable(scene_editor ${SOURCES})

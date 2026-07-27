@@ -28,6 +28,7 @@ public:
     enum Category {
         CatBrush = 0, CatVertex, CatProps, CatVegetation,  // tool categories
         CatTerrain, CatLayers, CatEnv, CatView,            // setting categories
+        CatFile,                                           // file operations
         CatCount
     };
 
@@ -55,6 +56,11 @@ private:
     void drawLayersContent();
     void drawEnvContent();
     void drawViewContent();
+    void drawFileContent();
+
+    // Scene save/load (implemented in scene.cpp).
+    bool saveScene(const std::string& path);
+    bool loadScene(const std::string& path);
 
     // Tool modes: 0 = terrain brush, 1 = prop select/place, 2 = vertex edit
     enum ToolMode { ToolPaint = 0, ToolProp = 1, ToolVertex = 2 };

@@ -18,10 +18,11 @@ public:
     struct Prototype {
         std::shared_ptr<Model> model;
         std::string name;
-        float targetSize = 2.0f;   // world-space size of the largest AABB dim
-        float minScale   = 0.8f;   // random scale jitter range
+        std::string sourcePath;
+        float targetSize = 2.0f;
+        float minScale   = 0.8f;
         float maxScale   = 1.2f;
-        float randomYaw  = 1.0f;   // 0 = aligned, 1 = full random yaw
+        float randomYaw  = 1.0f;
     };
 
     struct Instance {
@@ -39,7 +40,7 @@ public:
 
     // Prototype palette management.
     int  addPrototype(std::shared_ptr<Model> model, const std::string& name,
-                      float targetSize = 2.0f);
+                      float targetSize = 2.0f, const std::string& sourcePath = "");
     void removePrototype(int index);
     void clearPrototypes();
     int  prototypeCount() const { return (int)prototypes_.size(); }
@@ -53,6 +54,8 @@ public:
                float radius, float density, bool erase);
     void clearInstances();
     int  instanceCount() const { return (int)instances_.size(); }
+    const std::vector<Instance>& instances() const { return instances_; }
+    void addInstance(const Instance& inst) { instances_.push_back(inst); }
 
     // Snap all instances to the current terrain height. Call after terrain
     // edits so details follow the heightfield. Optionally restrict to a
