@@ -33,7 +33,6 @@ private:
     // ImGui helpers
     void drawMainPanel();
     void drawHelpOverlay();
-    void drawPropsPanel();
     void drawSelectionBox();
 
     // Tool modes: 0 = terrain brush, 1 = prop select/place

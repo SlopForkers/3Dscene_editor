@@ -415,7 +415,6 @@ void App::renderImGui() {
     ImGui::NewFrame();
 
     drawMainPanel();
-    drawPropsPanel();
     if (showHelp_) drawHelpOverlay();
 
     ImGui::Render();
@@ -424,60 +423,153 @@ void App::renderImGui() {
 
 void App::drawMainPanel() {
     ImGui::SetNextWindowPos(ImVec2(10, 10), ImGuiCond_FirstUseEver);
-    ImGui::SetNextWindowSize(ImVec2(290, 0), ImGuiCond_FirstUseEver);
+    ImGui::SetNextWindowSize(ImVec2(310, 0), ImGuiCond_FirstUseEver);
     ImGui::Begin("Scene Editor");
 
-    if (ImGui::CollapsingHeader("Brush", ImGuiTreeNodeFlags_DefaultOpen)) {
-        const char* names[] = { "Raise", "Lower", "Smooth", "Flatten", "Noise", "Set Height" };
-        for (int i = 0; i < 6; ++i) {
-            bool sel = (brush_.type == i);
-            if (ImGui::RadioButton(names[i], sel)) brush_.type = (Terrain::BrushParams::Type)i;
-            if (i < 4 && (i + 1) % 2 != 0) ImGui::SameLine();
+    if (ImGui::BeginTabBar("##tabs", ImGuiTabBarFlags_None)) {
+        // ---- Brush tab ----
+        if (ImGui::BeginTabItem("Brush")) {
+            const char* names[] = { "Raise", "Lower", "Smooth", "Flatten", "Noise", "Set Height" };
+            for (int i = 0; i < 6; ++i) {
+                bool sel = (brush_.type == i);
+                if (ImGui::RadioButton(names[i], sel)) brush_.type = (Terrain::BrushParams::Type)i;
+                if (i < 4 && (i + 1) % 2 != 0) ImGui::SameLine();
+            }
+            ImGui::Separator();
+
+            ImGui::SliderFloat("Radius",   &brush_.radius,   1.0f, terrain_.worldSize() * 0.4f, "%.1f");
+            ImGui::SliderFloat("Strength", &brush_.strength,  0.01f, 5.0f, "%.2f");
+
+            const char* fnames[] = { "Smooth", "Linear", "Constant" };
+            ImGui::Combo("Falloff", &brush_.falloff, fnames, 3);
+
+            if (brush_.type == Terrain::BrushParams::Flatten ||
+                brush_.type == Terrain::BrushParams::Set) {
+                ImGui::SliderFloat("Target Height", &brush_.target,
+                                   -20.0f, 40.0f, "%.1f");
+            }
+
+            if (brush_.radius != 0.0f) brushCursor_.setShape(brush_.radius);
+            ImGui::EndTabItem();
         }
-        ImGui::Separator();
 
-        ImGui::SliderFloat("Radius",   &brush_.radius,   1.0f, terrain_.worldSize() * 0.4f, "%.1f");
-        ImGui::SliderFloat("Strength",  &brush_.strength, 0.01f, 5.0f, "%.2f");
-
-        const char* fnames[] = { "Smooth", "Linear", "Constant" };
-        ImGui::Combo("Falloff", &brush_.falloff, fnames, 3);
-
-        if (brush_.type == Terrain::BrushParams::Flatten ||
-            brush_.type == Terrain::BrushParams::Set) {
-            ImGui::SliderFloat("Target Height", &brush_.target,
-                               -20.0f, 40.0f, "%.1f");
+        // ---- Terrain tab ----
+        if (ImGui::BeginTabItem("Terrain")) {
+            ImGui::Text("Grid: %d x %d", terrain_.gridX(), terrain_.gridZ());
+            ImGui::Text("World size: %.0f m", terrain_.worldSize());
+            ImGui::Text("Height range: %.2f .. %.2f", terrain_.minHeight(), terrain_.maxHeight());
+            if (ImGui::Button("Flatten")) terrain_.flatten(0.0f);
+            ImGui::SameLine();
+            if (ImGui::Button("Generate Hills")) terrain_.generateHills();
+            ImGui::EndTabItem();
         }
 
-        if (brush_.radius != 0.0f) brushCursor_.setShape(brush_.radius);
-    }
+        // ---- Props tab ----
+        if (ImGui::BeginTabItem("Props")) {
+            if (ImGui::Button("Import glTF / VRM...")) {
+                std::string path = openFileDialog();
+                if (!path.empty()) importModel(path);
+            }
+            ImGui::SameLine();
+            ImGui::SliderFloat("Size", &propTargetSize_, 1.0f, 40.0f, "%.1f");
 
-    if (ImGui::CollapsingHeader("Terrain", ImGuiTreeNodeFlags_DefaultOpen)) {
-        ImGui::Text("Grid: %d x %d", terrain_.gridX(), terrain_.gridZ());
-        ImGui::Text("World size: %.0f m", terrain_.worldSize());
-        ImGui::Text("Height range: %.2f .. %.2f", terrain_.minHeight(), terrain_.maxHeight());
-        if (ImGui::Button("Flatten")) terrain_.flatten(0.0f);
-        ImGui::SameLine();
-        if (ImGui::Button("Generate Hills")) terrain_.generateHills();
-    }
+            ImGui::Separator();
+            ImGui::Text("Tool: %s", toolMode_ == ToolPaint ? "Brush" : "Prop");
+            ImGui::SameLine();
+            if (ImGui::Button(toolMode_ == ToolPaint ? "Switch to Prop" : "Switch to Brush")) {
+                toolMode_ = (toolMode_ == ToolPaint) ? ToolProp : ToolPaint;
+            }
 
-    if (ImGui::CollapsingHeader("Display", ImGuiTreeNodeFlags_DefaultOpen)) {
-        ImGui::Checkbox("Wireframe", &wireframe_);
-        ImGui::Checkbox("Show cursor", &showCursor_);
-        ImGui::Checkbox("Show help (H)", &showHelp_);
-        ImGui::ColorEdit3("Cursor color", cursorColor_);
-        ImGui::Separator();
-        ImGui::SliderFloat("Light azimuth",   &lightAzimuth_,   0.0f, 6.28f);
-        ImGui::SliderFloat("Light elevation", &lightElevation_, 0.1f, 1.55f);
-    }
+            if (toolMode_ == ToolProp) {
+                ImGui::Text("Gizmo:");
+                ImGui::SameLine();
+                int mode = gizmo_.mode();
+                if (ImGui::RadioButton("Move", mode == Gizmo::Translate)) gizmo_.setMode(Gizmo::Translate);
+                ImGui::SameLine();
+                if (ImGui::RadioButton("Rotate", mode == Gizmo::Rotate)) gizmo_.setMode(Gizmo::Rotate);
+                ImGui::SameLine();
+                if (ImGui::RadioButton("Scale", mode == Gizmo::Scale)) gizmo_.setMode(Gizmo::Scale);
+            }
 
-    if (ImGui::CollapsingHeader("Camera")) {
-        ImGui::Text("Distance: %.1f", camera_.distance());
-        ImGui::Text("Target: (%.1f, %.1f, %.1f)",
-                    camera_.target().x, camera_.target().y, camera_.target().z);
-        if (ImGui::Button("Reset View")) {
-            camera_ = Camera();
-            camera_.setViewport(fbWidth_, fbHeight_);
+            ImGui::Separator();
+            ImGui::Text("Placed props: %d", props_.count());
+            ImGui::BeginChild("proplist", ImVec2(0, 120), true);
+            for (const auto& p : props_.props()) {
+                bool sel = (p.id == props_.selectedId());
+                ImGui::PushID(p.id);
+                if (ImGui::Selectable(p.displayName.c_str(), sel)) {
+                    props_.select(p.id);
+                    toolMode_ = ToolProp;
+                }
+                ImGui::PopID();
+            }
+            ImGui::EndChild();
+
+            Prop* sel = props_.selected();
+            if (sel) {
+                ImGui::Separator();
+                ImGui::Text("Selected: %s", sel->displayName.c_str());
+                ImGui::DragFloat3("Position", &sel->position[0], 0.5f);
+                ImGui::SliderFloat("Yaw",   &sel->rotationEuler.y, -3.14159f, 3.14159f, "%.2f");
+                ImGui::SliderFloat("Pitch", &sel->rotationEuler.x, -1.5708f,  1.5708f,  "%.2f");
+                ImGui::SliderFloat("Roll",  &sel->rotationEuler.z, -3.14159f, 3.14159f, "%.2f");
+                float uniformScale = sel->scale.x;
+                if (ImGui::SliderFloat("Scale", &uniformScale, 0.01f, 20.0f, "%.2f", ImGuiSliderFlags_Logarithmic)) {
+                    sel->scale = glm::vec3(uniformScale);
+                }
+                if (ImGui::Button("Snap to ground")) {
+                    float h = terrain_.heightAtWorld(sel->position.x, sel->position.z);
+                    float bottom = sel->model ? sel->model->aabbMin().y : 0.0f;
+                    sel->position.y = h - bottom * sel->scale.y;
+                }
+                ImGui::SameLine();
+                if (ImGui::Button("Duplicate")) {
+                    auto m = sel->model;
+                    int newId = props_.addProp(m, sel->position,
+                                              terrain_.heightAtWorld(sel->position.x, sel->position.z),
+                                              0.0f, sel->displayName + " copy");
+                    if (newId >= 0) {
+                        Prop* np = props_.findProp(newId);
+                        if (np) {
+                            np->rotationEuler = sel->rotationEuler;
+                            np->scale = sel->scale;
+                            np->position.y = sel->position.y;
+                        }
+                    }
+                }
+                ImGui::SameLine();
+                if (ImGui::Button("Delete")) {
+                    props_.removeProp(sel->id);
+                }
+            }
+            ImGui::EndTabItem();
         }
+
+        // ---- Display tab ----
+        if (ImGui::BeginTabItem("Display")) {
+            ImGui::Checkbox("Wireframe", &wireframe_);
+            ImGui::Checkbox("Show cursor", &showCursor_);
+            ImGui::Checkbox("Show help (H)", &showHelp_);
+            ImGui::ColorEdit3("Cursor color", cursorColor_);
+            ImGui::Separator();
+            ImGui::SliderFloat("Light azimuth",   &lightAzimuth_,   0.0f, 6.28f);
+            ImGui::SliderFloat("Light elevation", &lightElevation_, 0.1f, 1.55f);
+            ImGui::EndTabItem();
+        }
+
+        // ---- Camera tab ----
+        if (ImGui::BeginTabItem("Camera")) {
+            ImGui::Text("Distance: %.1f", camera_.distance());
+            ImGui::Text("Target: (%.1f, %.1f, %.1f)",
+                        camera_.target().x, camera_.target().y, camera_.target().z);
+            if (ImGui::Button("Reset View")) {
+                camera_ = Camera();
+                camera_.setViewport(fbWidth_, fbHeight_);
+            }
+            ImGui::EndTabItem();
+        }
+
+        ImGui::EndTabBar();
     }
 
     ImGui::End();
@@ -503,8 +595,9 @@ void App::drawHelpOverlay() {
         ImGui::Separator();
         ImGui::TextUnformatted("Prop tool:");
         ImGui::BulletText("Left-click prop: select");
-        ImGui::BulletText("Left-click ground: move selected");
-        ImGui::BulletText("Left-drag ground: drag selected");
+        ImGui::BulletText("Left-click empty: deselect");
+        ImGui::BulletText("Drag gizmo axes to transform");
+        ImGui::BulletText("T/R/S: gizmo mode");
     }
     ImGui::Separator();
     ImGui::BulletText("F: wireframe   H: help");
@@ -519,91 +612,6 @@ void App::drawHelpOverlay() {
                     props_.count(),
                     props_.selectedId() >= 0 ? std::to_string(props_.selectedId()).c_str() : "none");
     }
-    ImGui::End();
-}
-
-void App::drawPropsPanel() {
-    ImGui::SetNextWindowPos(ImVec2(310, 10), ImGuiCond_FirstUseEver);
-    ImGui::SetNextWindowSize(ImVec2(300, 0), ImGuiCond_FirstUseEver);
-    ImGui::Begin("Props");
-
-    if (ImGui::Button("Import glTF / VRM...")) {
-        std::string path = openFileDialog();
-        if (!path.empty()) importModel(path);
-    }
-    ImGui::SameLine();
-    ImGui::SliderFloat("Size", &propTargetSize_, 1.0f, 40.0f, "%.1f");
-
-    ImGui::Separator();
-    ImGui::Text("Tool: %s", toolMode_ == ToolPaint ? "Brush" : "Prop");
-    ImGui::SameLine();
-    if (ImGui::Button(toolMode_ == ToolPaint ? "Switch to Prop" : "Switch to Brush")) {
-        toolMode_ = (toolMode_ == ToolPaint) ? ToolProp : ToolPaint;
-    }
-
-    if (toolMode_ == ToolProp) {
-        ImGui::Text("Gizmo:");
-        ImGui::SameLine();
-        int mode = gizmo_.mode();
-        if (ImGui::RadioButton("Move", mode == Gizmo::Translate)) gizmo_.setMode(Gizmo::Translate);
-        ImGui::SameLine();
-        if (ImGui::RadioButton("Rotate", mode == Gizmo::Rotate)) gizmo_.setMode(Gizmo::Rotate);
-        ImGui::SameLine();
-        if (ImGui::RadioButton("Scale", mode == Gizmo::Scale)) gizmo_.setMode(Gizmo::Scale);
-    }
-
-    ImGui::Separator();
-    ImGui::Text("Placed props: %d", props_.count());
-    ImGui::BeginChild("proplist", ImVec2(0, 120), true);
-    for (const auto& p : props_.props()) {
-        bool sel = (p.id == props_.selectedId());
-        ImGui::PushID(p.id);
-        if (ImGui::Selectable(p.displayName.c_str(), sel)) {
-            props_.select(p.id);
-            toolMode_ = ToolProp;
-        }
-        ImGui::PopID();
-    }
-    ImGui::EndChild();
-
-    Prop* sel = props_.selected();
-    if (sel) {
-        ImGui::Separator();
-        ImGui::Text("Selected: %s", sel->displayName.c_str());
-        ImGui::DragFloat3("Position", &sel->position[0], 0.5f);
-        ImGui::SliderFloat("Yaw", &sel->rotationEuler.y, -3.14159f, 3.14159f, "%.2f");
-        ImGui::SliderFloat("Pitch", &sel->rotationEuler.x, -1.5708f, 1.5708f, "%.2f");
-        ImGui::SliderFloat("Roll", &sel->rotationEuler.z, -3.14159f, 3.14159f, "%.2f");
-        float uniformScale = sel->scale.x;
-        if (ImGui::SliderFloat("Scale", &uniformScale, 0.01f, 20.0f, "%.2f", ImGuiSliderFlags_Logarithmic)) {
-            sel->scale = glm::vec3(uniformScale);
-        }
-        if (ImGui::Button("Snap to ground")) {
-            float h = terrain_.heightAtWorld(sel->position.x, sel->position.z);
-            float bottom = sel->model ? sel->model->aabbMin().y : 0.0f;
-            sel->position.y = h - bottom * sel->scale.y;
-        }
-        ImGui::SameLine();
-        if (ImGui::Button("Duplicate")) {
-            auto m = sel->model;
-            int newId = props_.addProp(m, sel->position,
-                                       terrain_.heightAtWorld(sel->position.x, sel->position.z),
-                                       0.0f, sel->displayName + " copy");
-            if (newId >= 0) {
-                Prop* np = props_.findProp(newId);
-                if (np) {
-                    np->rotationEuler = sel->rotationEuler;
-                    np->scale = sel->scale;
-                    np->position.y = sel->position.y;
-                }
-            }
-        }
-        ImGui::SameLine();
-        if (ImGui::Button("Delete")) {
-            props_.removeProp(sel->id);
-        }
-    }
-
     ImGui::End();
 }
 
