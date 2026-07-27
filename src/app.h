@@ -10,6 +10,7 @@
 #include "skybox.h"
 #include "vertex_edit.h"
 #include "detail.h"
+#include "build.h"
 #include <memory>
 #include <string>
 #include <vector>
@@ -27,6 +28,7 @@ public:
     // the file-scope icon helpers in app.cpp can switch on them.
     enum Category {
         CatBrush = 0, CatVertex, CatProps, CatVegetation,  // tool categories
+        CatBuild,                                          // building blocks
         CatTerrain, CatLayers, CatEnv, CatView,            // setting categories
         CatFile,                                           // file operations
         CatCount
@@ -52,6 +54,7 @@ private:
     void drawVertexContent();
     void drawPropsContent();
     void drawVegetationContent();
+    void drawBuildContent();
     void drawTerrainContent();
     void drawLayersContent();
     void drawEnvContent();
@@ -62,8 +65,9 @@ private:
     bool saveScene(const std::string& path);
     bool loadScene(const std::string& path);
 
-    // Tool modes: 0 = terrain brush, 1 = prop select/place, 2 = vertex edit
-    enum ToolMode { ToolPaint = 0, ToolProp = 1, ToolVertex = 2 };
+    // Tool modes: 0 = terrain brush, 1 = prop select/place, 2 = vertex edit,
+    // 3 = build blocks.
+    enum ToolMode { ToolPaint = 0, ToolProp = 1, ToolVertex = 2, ToolBuild = 3 };
     int toolMode_ = ToolPaint;
 
     int activeCategory_ = CatBrush;
@@ -85,6 +89,7 @@ private:
     Shader propShader_;
     Shader skyboxShader_;
     Shader skyboxConvertShader_;
+    Shader blockShader_;
     Skybox skybox_;
     float skyExposure_ = 1.0f;
 
@@ -132,6 +137,15 @@ private:
 
     // Detail/vegetation system (instanced painting).
     DetailSystem details_;
+
+    // Block building system.
+    BuildSystem build_;
+    int  selectedBlockId_ = -1;
+    // Ghost placement computed each frame from the cursor ray (Build tool).
+    bool  hasGhost_ = false;
+    glm::vec3 ghostCenter_ = glm::vec3(0.0f);
+    glm::vec3 ghostSize_   = glm::vec3(2.0f);
+    BuildSystem::BlockType ghostType_ = BuildSystem::Foundation;
 
     // Selection box wireframe VAO/VBO (unit cube, reused per frame).
     GLuint boxVao_ = 0, boxVbo_ = 0;

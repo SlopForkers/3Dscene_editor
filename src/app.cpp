@@ -96,6 +96,10 @@ bool App::initOpenGL() {
                                             shaderDir_ + "/skybox_convert.frag")) {
         return false;
     }
+    if (!blockShader_.loadFromFile(shaderDir_ + "/block.vert",
+                                     shaderDir_ + "/block.frag")) {
+        return false;
+    }
 
     glEnable(GL_DEPTH_TEST);
     glEnable(GL_MULTISAMPLE);
@@ -109,6 +113,7 @@ bool App::initOpenGL() {
     skybox_.create();
     vertexEditor_.create();
     details_.create();
+    build_.create();
 
     // Unit-cube wireframe (24 vertices, 12 edges) for prop selection boxes.
     {
@@ -156,6 +161,7 @@ void App::shutdown() {
         skybox_.destroy();
         vertexEditor_.destroy();
         details_.destroy();
+        build_.destroy();
         if (boxVao_) { glDeleteVertexArrays(1, &boxVao_); boxVao_ = 0; }
         if (boxVbo_) { glDeleteBuffers(1, &boxVbo_); boxVbo_ = 0; }
         props_.clear();
@@ -193,6 +199,8 @@ int App::run(const std::vector<std::string>& importArgs) {
             props_.clear();
             details_.clearInstances();
             details_.clearPrototypes();
+            build_.clear();
+            selectedBlockId_ = -1;
             loadScene(out);
         } else {
             importModel(p);
@@ -300,16 +308,18 @@ void App::handleInput(float dt) {
         }
     }
 
-    // Tab cycles between terrain brush, prop and vertex-edit tools.
+    // Tab cycles between terrain brush, prop, vertex-edit and build tools.
     if (g_input.keyPressed(GLFW_KEY_TAB)) {
         bool wasVertex = (toolMode_ == ToolVertex);
-        toolMode_ = (toolMode_ == ToolPaint) ? ToolProp :
-                    (toolMode_ == ToolProp)  ? ToolVertex : ToolPaint;
+        toolMode_ = (toolMode_ == ToolPaint)  ? ToolProp   :
+                    (toolMode_ == ToolProp)   ? ToolVertex :
+                    (toolMode_ == ToolVertex) ? ToolBuild : ToolPaint;
         painting_ = false;
         if (wasVertex && toolMode_ != ToolVertex) wireframe_ = false;
         if (toolMode_ == ToolPaint)       activeCategory_ = CatBrush;
         else if (toolMode_ == ToolProp)    activeCategory_ = CatProps;
         else if (toolMode_ == ToolVertex) { activeCategory_ = CatVertex; wireframe_ = true; }
+        else if (toolMode_ == ToolBuild)   activeCategory_ = CatBuild;
     }
 
     // Left-button behaviour depends on the active tool.
@@ -343,9 +353,11 @@ void App::handleInput(float dt) {
                     Terrain::BrushParams step = brush_;
                     step.strength = amount;
                     bool changed = terrain_.applyBrush(step, hit);
-                    // Keep painted details glued to the edited heightfield.
+                    // Keep painted details and foundation blocks glued to the
+                    // edited heightfield.
                     if (changed) {
                         details_.reproject(terrain_, hit, brush_.radius * 1.5f);
+                        build_.reproject(terrain_, hit, brush_.radius * 1.5f);
                     }
                 }
                 lastPaintPoint_ = hit;
@@ -393,6 +405,42 @@ void App::handleInput(float dt) {
         } else if (g_input.mousePressed(Input::Left) && !overUI) {
             // Re-enable wireframe on click so the user can resume editing.
             wireframe_ = true;
+        }
+    } else if (toolMode_ == ToolBuild) {
+        // Build tool: compute ghost placement from the cursor ray each frame
+        // so the user sees where the next block will go.
+        double sx = g_input.mouseX() * (double)fbWidth_  / (double)winWidth_;
+        double sy = g_input.mouseY() * (double)fbHeight_ / (double)winHeight_;
+        glm::vec3 origin, dir;
+        camera_.screenToRay((float)sx, (float)sy, origin, dir);
+        glm::vec3 gc, gs;
+        BuildSystem::BlockType gt;
+        hasGhost_ = !overUI && build_.computePlacement(terrain_, origin, dir,
+                                                        gc, gs, gt);
+        if (hasGhost_) { ghostCenter_ = gc; ghostSize_ = gs; ghostType_ = gt; }
+
+        if (!overUI && g_input.mousePressed(Input::Left)) {
+            bool ctrl = g_input.keyDown(GLFW_KEY_LEFT_CONTROL) ||
+                        g_input.keyDown(GLFW_KEY_RIGHT_CONTROL);
+            if (ctrl) {
+                // Ctrl+click: delete the block under the cursor.
+                glm::vec3 hp, hn;
+                int id = build_.pick(origin, dir, hp, hn);
+                if (id >= 0) {
+                    build_.removeBlock(id);
+                    if (selectedBlockId_ == id) selectedBlockId_ = -1;
+                }
+            } else if (hasGhost_) {
+                // Place a block at the ghost position.
+                int id = build_.placeBlock(ghostCenter_, ghostSize_,
+                                            ghostType_, build_.color());
+                selectedBlockId_ = id;
+            }
+        }
+        // Delete key removes the selected block.
+        if (g_input.keyPressed(GLFW_KEY_DELETE) && selectedBlockId_ >= 0) {
+            build_.removeBlock(selectedBlockId_);
+            selectedBlockId_ = -1;
         }
     }
 
@@ -465,6 +513,28 @@ void App::renderScene() {
     if (details_.instanceCount() > 0) {
         propShader_.use();
         details_.render(propShader_, vp, lightDir, camera_.position());
+    }
+    // Build blocks (solid cubes).
+    if (build_.count() > 0) {
+        build_.render(blockShader_, vp, lightDir, camera_.position());
+    }
+    // Ghost preview for the next block (build tool only).
+    if (toolMode_ == ToolBuild && hasGhost_) {
+        // Semi-transparent fill.
+        build_.renderGhost(blockShader_, vp, lightDir, camera_.position(),
+                           ghostCenter_, ghostSize_, build_.color());
+        // Wireframe outline on top.
+        glDisable(GL_DEPTH_TEST);
+        build_.renderWireframeBox(lineShader_, vp, ghostCenter_, ghostSize_,
+                                  glm::vec3(1.0f, 0.95f, 0.3f));
+        glEnable(GL_DEPTH_TEST);
+    }
+    // Selected block wireframe highlight (build tool only).
+    if (toolMode_ == ToolBuild && selectedBlockId_ >= 0) {
+        glDisable(GL_DEPTH_TEST);
+        build_.renderWireframe(lineShader_, vp, selectedBlockId_,
+                                glm::vec3(1.0f, 0.6f, 0.2f));
+        glEnable(GL_DEPTH_TEST);
     }
     // Selection box for the currently selected prop.
     drawSelectionBox();
@@ -760,6 +830,45 @@ static void CatFile(ImDrawList* dl, ImVec2 p0, ImVec2 p1, ImU32 col) {
                        ImVec2(x0 + (x1 - x0) * 0.4f, y0), col, 3.0f);
 }
 
+static void CatBuild(ImDrawList* dl, ImVec2 p0, ImVec2 p1, ImU32 col) {
+    // Isometric block: three visible faces with distinct shades.
+    float cx = (p0.x + p1.x) * 0.5f;
+    float cy = (p0.y + p1.y) * 0.5f;
+    float w = (p1.x - p0.x) * 0.24f;
+    float h = (p1.y - p0.y) * 0.18f;
+    ImVec2 top(cx, cy - h),
+           tl(cx - w, cy - h * 0.5f),
+           tr(cx + w, cy - h * 0.5f),
+           ce(cx, cy),
+           bl(cx - w, cy + h * 0.5f),
+           br(cx + w, cy + h * 0.5f),
+           bot(cx, cy + h);
+    // Darken a colour by multiplying channels (f < 1 darkens).
+    auto dim = [](ImU32 c, float f) {
+        return ((ImU32)((c & 0xFF) * f)) |
+               ((ImU32)(((c >> 8) & 0xFF) * f) << 8) |
+               ((ImU32)(((c >> 16) & 0xFF) * f) << 16) |
+               (c & 0xFF000000);
+    };
+    ImU32 topCol = col;
+    ImU32 leftCol = dim(col, 0.78f);
+    ImU32 rightCol = dim(col, 0.55f);
+    // Top diamond (convex): top -> tl -> ce -> tr.
+    dl->AddQuadFilled(top, tl, ce, tr, topCol);
+    // Left parallelogram: tl -> bl -> bot -> ce.
+    dl->AddQuadFilled(tl, bl, bot, ce, leftCol);
+    // Right parallelogram: tr -> ce -> bot -> br.
+    dl->AddQuadFilled(tr, ce, bot, br, rightCol);
+    // Outline edges so the cube reads even at small sizes.
+    dl->AddLine(top, tl, IM_COL32(0, 0, 0, 120), 1.0f);
+    dl->AddLine(top, tr, IM_COL32(0, 0, 0, 120), 1.0f);
+    dl->AddLine(ce, bl, IM_COL32(0, 0, 0, 120), 1.0f);
+    dl->AddLine(ce, br, IM_COL32(0, 0, 0, 120), 1.0f);
+    dl->AddLine(bot, bl, IM_COL32(0, 0, 0, 120), 1.0f);
+    dl->AddLine(bot, br, IM_COL32(0, 0, 0, 120), 1.0f);
+}
+
+
 typedef void (*IconFn)(ImDrawList*, ImVec2, ImVec2, ImU32);
 static IconFn brushIcon(int type) {
     switch (type) {
@@ -780,6 +889,7 @@ static IconFn catIcon(int cat) {
         case App::CatVertex:     return &CatVertex;
         case App::CatProps:      return &CatProps;
         case App::CatVegetation: return &CatVegetation;
+        case App::CatBuild:      return &CatBuild;
         case App::CatTerrain:    return &CatTerrain;
         case App::CatLayers:     return &CatLayers;
         case App::CatEnv:        return &CatEnv;
@@ -794,6 +904,7 @@ static const char* catName(int cat) {
         case App::CatVertex:   return "Vertex";
         case App::CatProps:      return "Props";
         case App::CatVegetation: return "Vegetation";
+        case App::CatBuild:      return "Build";
         case App::CatTerrain:    return "Terrain";
         case App::CatLayers:   return "Layers";
         case App::CatEnv:      return "Environment";
@@ -818,6 +929,7 @@ void App::selectCategory(int cat) {
         toolMode_ = ToolPaint;
         brush_.type = Terrain::BrushParams::Vegetation;
     }
+    else if (cat == CatBuild) toolMode_ = ToolBuild;
 }
 
 void App::drawLeftPanel() {
@@ -862,7 +974,8 @@ void App::drawLeftPanel() {
     // --- Rail (left column, full height) ---
     ImGui::BeginChild("##rail", ImVec2(railW, 0), true, ImGuiWindowFlags_NoScrollbar);
     ImVec2 railStart = ImGui::GetCursorScreenPos();
-    int order[CatCount + 2] = { CatBrush, CatVertex, CatProps, CatVegetation, -1,
+    int order[CatCount + 2] = { CatBrush, CatVertex, CatProps, CatVegetation,
+                                 CatBuild, -1,
                                  CatTerrain, CatLayers, CatEnv, CatView, -1,
                                  CatFile };
     ImVec2 cursor = railStart;
@@ -891,6 +1004,7 @@ void App::drawLeftPanel() {
         case CatVertex:     drawVertexContent();     break;
         case CatProps:      drawPropsContent();      break;
         case CatVegetation: drawVegetationContent(); break;
+        case CatBuild:      drawBuildContent();      break;
         case CatTerrain:    drawTerrainContent();     break;
         case CatLayers:     drawLayersContent();      break;
         case CatEnv:        drawEnvContent();         break;
@@ -1187,6 +1301,60 @@ void App::drawVegetationContent() {
                        "Density controls how many per stroke step.");
 }
 
+void App::drawBuildContent() {
+    ImGui::TextDisabled("Build");
+    ImGui::Separator();
+
+    float w = build_.blockWidth(), h = build_.blockHeight();
+    if (ImGui::SliderFloat("Block width",  &w, 0.5f, 16.0f, "%.2f")) build_.setBlockSize(w, h);
+    if (ImGui::SliderFloat("Block height", &h, 0.5f, 16.0f, "%.2f")) build_.setBlockSize(w, h);
+
+    float sunk = build_.sunkDepth();
+    if (ImGui::SliderFloat("Foundation sink", &sunk, 0.0f, 0.95f, "%.2f"))
+        build_.setSunkDepth(sunk);
+
+    float step = build_.gridStep();
+    if (ImGui::SliderFloat("Grid step", &step, 0.25f, 8.0f, "%.2f"))
+        build_.setGridStep(step);
+
+    glm::vec3 c = build_.color();
+    float cf[3] = { c.r, c.g, c.b };
+    if (ImGui::ColorEdit3("Block color", cf))
+        build_.setColor(glm::vec3(cf[0], cf[1], cf[2]));
+
+    ImGui::Separator();
+    ImGui::Text("Placed blocks: %d", build_.count());
+    ImGui::SameLine();
+    if (ImGui::Button("Clear All")) {
+        build_.clear();
+        selectedBlockId_ = -1;
+    }
+
+    ImGui::Separator();
+    ImGui::TextDisabled("Selected block");
+    if (selectedBlockId_ >= 0) {
+        const BuildSystem::Block* b = build_.findBlock(selectedBlockId_);
+        if (b) {
+            ImGui::Text("id=%d  type=%s", b->id,
+                        b->type == BuildSystem::Foundation ? "Foundation" : "Wall");
+            ImGui::Text("pos (%.1f, %.1f, %.1f)",
+                        b->position.x, b->position.y, b->position.z);
+            if (ImGui::Button("Delete (Del)")) {
+                build_.removeBlock(selectedBlockId_);
+                selectedBlockId_ = -1;
+            }
+        }
+    } else {
+        ImGui::TextDisabled("(none)");
+    }
+
+    ImGui::Separator();
+    ImGui::TextWrapped("Click terrain: place foundation block (sunk into ground). "
+                       "Click a block's SIDE face: extend the foundation (same level). "
+                       "Click a block's TOP face: place a wall on top. "
+                       "Ctrl+click: delete block. Del: remove selected.");
+}
+
 void App::drawTerrainContent() {
     ImGui::TextDisabled("Terrain");
     ImGui::Separator();
@@ -1276,11 +1444,9 @@ void App::drawFileContent() {
 
     if (ImGui::Button("Save Scene...")) {
         std::string path = saveFileDialog("Scene", "*.scene");
-        std::cerr << "[UI] saveFileDialog returned: '" << path << "'\n";
         if (!path.empty()) {
             // Ensure .scene extension.
             if (path.find(".scene") == std::string::npos) path += ".scene";
-            std::cerr << "[UI] saveScene path: '" << path << "'\n";
             if (!saveScene(path))
                 std::cerr << "Save failed: " << path << "\n";
         }
@@ -1297,14 +1463,15 @@ void App::drawFileContent() {
     ImGui::TextDisabled("Scene contents");
     ImGui::Text("Props:      %d", props_.count());
     ImGui::Text("Details:    %d", details_.instanceCount());
+    ImGui::Text("Blocks:     %d", build_.count());
     ImGui::Text("Terrain:    %d x %d (%.0f m)", terrain_.gridX(), terrain_.gridZ(),
                 terrain_.worldSize());
     ImGui::Text("Layers:     %d", terrain_.layerCount());
     ImGui::Text("Skybox:     %s", skybox_.isDefault() ? "procedural" : "imported");
 
     ImGui::Separator();
-    ImGui::TextWrapped("Scene format: .scene (JSON metadata) + "
-                       "_heights.bin + _splat.bin in the same folder. "
+    ImGui::TextWrapped("Single binary .scene file: magic + JSON metadata + "
+                       "heights + splat, with props/blocks/details embedded in JSON. "
                        "Asset paths are stored relative to the scene file.");
 }
 
@@ -1318,7 +1485,7 @@ void App::drawHelpOverlay() {
     ImGui::TextUnformatted("Controls:");
     ImGui::BulletText("Left rail: pick tool / settings panel");
     ImGui::BulletText("Bottom bar: pick a brush (switches to Brush mode)");
-    ImGui::BulletText("Tab: cycle Brush / Prop / Vertex tool");
+    ImGui::BulletText("Tab: cycle Brush / Prop / Vertex / Build tool");
     ImGui::BulletText("Right-drag: orbit camera");
     ImGui::BulletText("Middle-drag: pan camera");
     ImGui::BulletText("Scroll: zoom (Shift+scroll: brush size, Ctrl+scroll: strength)");
@@ -1334,6 +1501,13 @@ void App::drawHelpOverlay() {
         ImGui::BulletText("Left-click empty: deselect");
         ImGui::BulletText("Drag gizmo axes to transform");
         ImGui::BulletText("T/R/S: gizmo mode");
+    } else if (toolMode_ == ToolBuild) {
+        ImGui::Separator();
+        ImGui::TextUnformatted("Build tool:");
+        ImGui::BulletText("Click terrain: place foundation");
+        ImGui::BulletText("Click block face: snap new block");
+        ImGui::BulletText("Ctrl+click: delete block");
+        ImGui::BulletText("Del: remove selected block");
     } else {
         ImGui::Separator();
         ImGui::TextUnformatted("Vertex tool (wireframe):");
@@ -1354,6 +1528,10 @@ void App::drawHelpOverlay() {
         ImGui::Text("Props: %d   Selected: %s",
                     props_.count(),
                     props_.selectedId() >= 0 ? std::to_string(props_.selectedId()).c_str() : "none");
+    } else if (toolMode_ == ToolBuild) {
+        ImGui::Text("Blocks: %d   Selected: %s",
+                    build_.count(),
+                    selectedBlockId_ >= 0 ? std::to_string(selectedBlockId_).c_str() : "none");
     } else {
         const char* dm = vertexEditor_.dragMode() == VertexEditor::FreeXYZ  ? "Free XYZ" :
                          vertexEditor_.dragMode() == VertexEditor::Vertical ? "Vertical" : "Normal";

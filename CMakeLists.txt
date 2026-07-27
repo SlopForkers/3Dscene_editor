@@ -142,6 +142,8 @@ set(SOURCES
     src/vertex_edit.h
     src/detail.cpp
     src/detail.h
+    src/build.cpp
+    src/build.h
     src/scene.cpp
     src/scene.h
 )

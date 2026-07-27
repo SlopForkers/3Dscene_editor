@@ -374,6 +374,24 @@ bool App::saveScene(const std::string& path) {
     details.obj["instances"] = insts;
     root.obj["details"] = details;
 
+    // Blocks (build system).
+    json::Value blocksArr(json::Value::ArrayT);
+    for (const auto& b : build_.blocks()) {
+        json::Value bk(json::Value::ObjectT);
+        bk.obj["type"] = json::Value((int)b.type);
+        bk.obj["cx"] = json::Value(b.position.x);
+        bk.obj["cy"] = json::Value(b.position.y);
+        bk.obj["cz"] = json::Value(b.position.z);
+        bk.obj["sx"] = json::Value(b.size.x);
+        bk.obj["sy"] = json::Value(b.size.y);
+        bk.obj["sz"] = json::Value(b.size.z);
+        bk.obj["r"]  = json::Value(b.color.r);
+        bk.obj["g"]  = json::Value(b.color.g);
+        bk.obj["b"]  = json::Value(b.color.b);
+        blocksArr.arr.push_back(bk);
+    }
+    root.obj["blocks"] = blocksArr;
+
     std::string jsonStr = json::dump(root);
 
     // --- Write single binary file: magic + version + JSON + heights + splat ---
@@ -406,11 +424,7 @@ bool App::saveScene(const std::string& path) {
     f.flush();
     f.close();
 
-    std::cerr << "[SAVE] " << path << "  json=" << jsonSize
-              << "  heights=" << heightsBytes
-              << "  splat=" << splatBytes
-              << "  props=" << props_.count()
-              << "  details=" << details_.instanceCount() << "\n";
+    std::cerr << "[SAVE] " << path << "  blocks=" << build_.count() << "\n";
     return true;
 }
 
@@ -517,10 +531,12 @@ bool App::loadScene(const std::string& path) {
         camera_.setDistance((float)cam["distance"].asNum(60.0));
     }
 
-    // --- Clear existing props + details ---
+    // --- Clear existing props + details + blocks ---
     props_.clear();
     details_.clearInstances();
     details_.clearPrototypes();
+    build_.clear();
+    selectedBlockId_ = -1;
 
     // --- Props ---
     const json::Value& props = root["props"];
@@ -589,6 +605,18 @@ bool App::loadScene(const std::string& path) {
         }
     }
 
-    std::cerr << "[LOAD] " << path << " ok\n";
+    // --- Blocks ---
+    const json::Value& blocks = root["blocks"];
+    if (blocks.isArr()) {
+        for (size_t i = 0; i < blocks.size(); ++i) {
+            const json::Value& bk = blocks[i];
+            glm::vec3 center((float)bk["cx"].asNum(), (float)bk["cy"].asNum(), (float)bk["cz"].asNum());
+            glm::vec3 size((float)bk["sx"].asNum(), (float)bk["sy"].asNum(), (float)bk["sz"].asNum());
+            glm::vec3 color((float)bk["r"].asNum(0.55f), (float)bk["g"].asNum(0.45f), (float)bk["b"].asNum(0.35f));
+            BuildSystem::BlockType type = (BuildSystem::BlockType)(int)bk["type"].asNum(BuildSystem::Wall);
+            build_.placeBlock(center, size, type, color);
+        }
+    }
+
     return true;
 }
