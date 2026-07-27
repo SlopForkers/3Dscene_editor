@@ -414,31 +414,109 @@ void App::handleInput(float dt) {
 
         bool ctrl = g_input.keyDown(GLFW_KEY_LEFT_CONTROL) ||
                     g_input.keyDown(GLFW_KEY_RIGHT_CONTROL);
+        float gs = build_.gridStep();
+        BuildSystem::Mode bmode = build_.mode();
 
-        // Press: pick block face (single-block snap) OR start rect on terrain.
+        // R cycles the wall edge rotation (+X -> +Z -> -X -> -Z).
+        if (bmode == BuildSystem::ModeWall && g_input.keyPressed(GLFW_KEY_R))
+            build_.rotateWallEdge();
+
+        // Ghost preview (only when not dragging).
+        if (!buildDragging_) {
+            hasGhost_ = false;
+            if (!overUI) {
+                glm::vec3 hp, hn;
+                int id = build_.pick(origin, dir, hp, hn);
+                if (id >= 0) {
+                    const BuildSystem::Block* b = build_.findBlock(id);
+                    if (b) {
+                        if (bmode == BuildSystem::ModeWall && hn.y > 0.5f) {
+                            // Wall ghost: position on the block edge selected by
+                            // the current wall rotation (R cycles 0..3).
+                            float fixed; bool alongX;
+                            build_.wallLineParamsFor(*b, fixed, alongX);
+                            ghostSize_ = alongX
+                                ? glm::vec3(build_.blockWidth(), build_.blockHeight(), build_.wallThickness())
+                                : glm::vec3(build_.wallThickness(), build_.blockHeight(), build_.blockWidth());
+                            // Snap only the along-axis centre; the fixed edge
+                            // coordinate already carries the rim offset.
+                            float ex = alongX ? b->position.x : fixed;
+                            float ez = alongX ? fixed : b->position.z;
+                            if (alongX) ex = std::round(ex / gs) * gs;
+                            else        ez = std::round(ez / gs) * gs;
+                            ghostCenter_ = glm::vec3(ex, b->max().y + build_.blockHeight() * 0.5f, ez);
+                            ghostType_ = BuildSystem::Wall;
+                            hasGhost_ = true;
+                        } else if (bmode == BuildSystem::ModeFoundation && hn.y <= 0.5f) {
+                            // Foundation ghost on side face.
+                            glm::vec3 gc, gsz;
+                            BuildSystem::BlockType gt;
+                            if (build_.computePlacement(terrain_, origin, dir, gc, gsz, gt)) {
+                                ghostCenter_ = gc; ghostSize_ = gsz; ghostType_ = gt;
+                                hasGhost_ = true;
+                            }
+                        }
+                    }
+                } else if (bmode == BuildSystem::ModeFoundation) {
+                    // Foundation ghost on terrain.
+                    glm::vec3 tHit;
+                    if (terrain_.raycast(origin, dir, tHit)) {
+                        float gx = std::round(tHit.x / gs) * gs;
+                        float gz = std::round(tHit.z / gs) * gs;
+                        ghostSize_ = glm::vec3(build_.blockWidth(), build_.blockHeight(), build_.blockWidth());
+                        float th = terrain_.heightAtWorld(gx, gz);
+                        float topY = th + build_.blockHeight() * (1.0f - build_.sunkDepth());
+                        ghostCenter_ = glm::vec3(gx, topY - build_.blockHeight() * 0.5f, gz);
+                        ghostType_ = BuildSystem::Foundation;
+                        hasGhost_ = true;
+                    }
+                }
+            }
+        } else {
+            hasGhost_ = false;
+        }
+
+        // Press: start drag or single-place.
         if (g_input.mousePressed(Input::Left) && !overUI) {
             glm::vec3 hp, hn;
             int id = build_.pick(origin, dir, hp, hn);
             if (id >= 0) {
+                const BuildSystem::Block* b = build_.findBlock(id);
                 if (ctrl) {
                     build_.removeBlock(id);
                     if (selectedBlockId_ == id) selectedBlockId_ = -1;
-                } else {
-                    glm::vec3 gc, gs;
-                    BuildSystem::BlockType gt;
-                    if (build_.computePlacement(terrain_, origin, dir, gc, gs, gt)) {
-                        int nid = build_.placeBlock(gc, gs, gt, build_.color());
-                        selectedBlockId_ = nid;
+                } else if (b) {
+                    if (bmode == BuildSystem::ModeWall && hn.y > 0.5f) {
+                        // Start wall LINE drag on block top. The wall sits on
+                        // the edge selected by the current wall rotation (R).
+                        float fixed; bool alongX;
+                        build_.wallLineParamsFor(*b, fixed, alongX);
+                        buildDragging_ = true;
+                        buildDragOnBlocks_ = true;
+                        buildDragBaseY_ = b->max().y;
+                        buildDragAlongX_ = alongX;
+                        buildDragFixed_ = fixed;
+                        buildDragStart_ = alongX
+                            ? glm::vec2(std::round(hp.x / gs) * gs, fixed)
+                            : glm::vec2(fixed, std::round(hp.z / gs) * gs);
+                    } else if (bmode == BuildSystem::ModeFoundation && hn.y <= 0.5f) {
+                        // Single foundation on side face.
+                        glm::vec3 gc, gsz;
+                        BuildSystem::BlockType gt;
+                        if (build_.computePlacement(terrain_, origin, dir, gc, gsz, gt)) {
+                            int nid = build_.placeBlock(gc, gsz, gt, build_.color());
+                            selectedBlockId_ = nid;
+                        }
                     }
                 }
-            } else {
-                // Start rectangle drag on the terrain.
+            } else if (bmode == BuildSystem::ModeFoundation) {
+                // Terrain: start foundation rect drag.
                 glm::vec3 tHit;
                 if (terrain_.raycast(origin, dir, tHit)) {
                     buildDragging_ = true;
-                    float gx = std::round(tHit.x / build_.gridStep()) * build_.gridStep();
-                    float gz = std::round(tHit.z / build_.gridStep()) * build_.gridStep();
-                    buildDragStart_ = glm::vec2(gx, gz);
+                    buildDragOnBlocks_ = false;
+                    buildDragStart_ = glm::vec2(std::round(tHit.x / gs) * gs,
+                                                std::round(tHit.z / gs) * gs);
                 }
             }
         }
@@ -446,12 +524,19 @@ void App::handleInput(float dt) {
             if (buildDragging_ && !overUI) {
                 glm::vec3 tHit;
                 if (terrain_.raycast(origin, dir, tHit)) {
-                    float gx = std::round(tHit.x / build_.gridStep()) * build_.gridStep();
-                    float gz = std::round(tHit.z / build_.gridStep()) * build_.gridStep();
+                    float gx = std::round(tHit.x / gs) * gs;
+                    float gz = std::round(tHit.z / gs) * gs;
                     if (ctrl) {
                         int n = build_.eraseRect(buildDragStart_.x, buildDragStart_.y,
                                                  gx, gz);
                         if (n > 0) selectedBlockId_ = -1;
+                    } else if (buildDragOnBlocks_) {
+                        // Wall line: project cursor onto the chosen axis.
+                        float startC = buildDragAlongX_ ? buildDragStart_.x
+                                                         : buildDragStart_.y;
+                        float curC = buildDragAlongX_ ? gx : gz;
+                        build_.fillWallLine(startC, curC, buildDragFixed_,
+                                             buildDragBaseY_, buildDragAlongX_);
                     } else {
                         build_.fillRect(terrain_,
                                         buildDragStart_.x, buildDragStart_.y,
@@ -460,17 +545,7 @@ void App::handleInput(float dt) {
                 }
             }
             buildDragging_ = false;
-        }
-
-        // Ghost preview for single-block placement (only when not dragging).
-        if (!buildDragging_) {
-            glm::vec3 gc, gs;
-            BuildSystem::BlockType gt;
-            hasGhost_ = !overUI && build_.computePlacement(terrain_, origin, dir,
-                                                            gc, gs, gt);
-            if (hasGhost_) { ghostCenter_ = gc; ghostSize_ = gs; ghostType_ = gt; }
-        } else {
-            hasGhost_ = false;
+            buildDragOnBlocks_ = false;
         }
 
         if (g_input.keyPressed(GLFW_KEY_DELETE) && selectedBlockId_ >= 0) {
@@ -555,16 +630,18 @@ void App::renderScene() {
     }
     // Ghost preview for the next block (build tool only).
     if (toolMode_ == ToolBuild && hasGhost_) {
+        // Walls have yaw=0 — size encodes orientation. Foundation has no yaw.
+        float ghostYaw = 0.0f;
         // Semi-transparent fill.
         build_.renderGhost(blockShader_, vp, lightDir, camera_.position(),
-                           ghostCenter_, ghostSize_, build_.color());
+                           ghostCenter_, ghostSize_, build_.color(), ghostYaw);
         // Wireframe outline on top.
         glDisable(GL_DEPTH_TEST);
         build_.renderWireframeBox(lineShader_, vp, ghostCenter_, ghostSize_,
-                                  glm::vec3(1.0f, 0.95f, 0.3f));
+                                  glm::vec3(1.0f, 0.95f, 0.3f), ghostYaw);
         glEnable(GL_DEPTH_TEST);
     }
-    // Drag-rectangle preview (build tool only, while dragging on terrain).
+    // Drag preview (build tool only, while dragging).
     if (toolMode_ == ToolBuild && buildDragging_) {
         double sx = g_input.mouseX() * (double)fbWidth_  / (double)winWidth_;
         double sy = g_input.mouseY() * (double)fbHeight_ / (double)winHeight_;
@@ -575,41 +652,64 @@ void App::renderScene() {
             float gs = build_.gridStep();
             float gx = std::round(tHit.x / gs) * gs;
             float gz = std::round(tHit.z / gs) * gs;
-            float x0 = std::min(buildDragStart_.x, gx) - gs * 0.5f;
-            float x1 = std::max(buildDragStart_.x, gx) + gs * 0.5f;
-            float z0 = std::min(buildDragStart_.y, gz) - gs * 0.5f;
-            float z1 = std::max(buildDragStart_.y, gz) + gs * 0.5f;
-            // Build a 5-vertex loop on the terrain surface at the rectangle
-            // border and draw it with the line shader.
-            auto yAt = [&](float x, float z) {
-                return terrain_.heightAtWorld(x, z) + 0.5f;
-            };
-            float pts[5][3] = {
-                {x0, yAt(x0, z0), z0},
-                {x1, yAt(x1, z0), z0},
-                {x1, yAt(x1, z1), z1},
-                {x0, yAt(x0, z1), z1},
-                {x0, yAt(x0, z0), z0},
-            };
+            bool ctrl = g_input.keyDown(GLFW_KEY_LEFT_CONTROL) ||
+                         g_input.keyDown(GLFW_KEY_RIGHT_CONTROL);
+            glm::vec3 rectCol;
+            if (ctrl) rectCol = glm::vec3(1.0f, 0.3f, 0.2f);
+            else if (buildDragOnBlocks_) rectCol = glm::vec3(0.3f, 0.8f, 1.0f);
+            else rectCol = glm::vec3(1.0f, 0.95f, 0.3f);
+
             GLuint tmpVao = 0, tmpVbo = 0;
             glGenVertexArrays(1, &tmpVao);
             glGenBuffers(1, &tmpVbo);
             glBindVertexArray(tmpVao);
             glBindBuffer(GL_ARRAY_BUFFER, tmpVbo);
-            glBufferData(GL_ARRAY_BUFFER, sizeof(pts), pts, GL_DYNAMIC_DRAW);
             glEnableVertexAttribArray(0);
             glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 3 * sizeof(float), (void*)0);
             lineShader_.use();
             lineShader_.setMat4("uViewProj", vp);
             lineShader_.setMat4("uModel", glm::mat4(1.0f));
-            glm::vec3 rectCol = g_input.keyDown(GLFW_KEY_LEFT_CONTROL) ||
-                                 g_input.keyDown(GLFW_KEY_RIGHT_CONTROL)
-                                 ? glm::vec3(1.0f, 0.3f, 0.2f)
-                                 : glm::vec3(1.0f, 0.95f, 0.3f);
             lineShader_.setVec3("uColor", rectCol);
             lineShader_.setFloat("uAlpha", 1.0f);
             glDisable(GL_DEPTH_TEST);
-            glDrawArrays(GL_LINE_STRIP, 0, 5);
+
+            if (buildDragOnBlocks_) {
+                // Wall line drag: draw a single line along the chosen axis at
+                // the fixed edge coordinate.
+                float startC = buildDragAlongX_ ? buildDragStart_.x
+                                                 : buildDragStart_.y;
+                float curC   = buildDragAlongX_ ? gx : gz;
+                float y = buildDragBaseY_ + 0.05f;
+                float pts[2][3];
+                if (buildDragAlongX_) {
+                    pts[0][0] = startC; pts[0][1] = y; pts[0][2] = buildDragFixed_;
+                    pts[1][0] = curC;   pts[1][1] = y; pts[1][2] = buildDragFixed_;
+                } else {
+                    pts[0][0] = buildDragFixed_; pts[0][1] = y; pts[0][2] = startC;
+                    pts[1][0] = buildDragFixed_; pts[1][1] = y; pts[1][2] = curC;
+                }
+                glBufferData(GL_ARRAY_BUFFER, sizeof(pts), pts, GL_DYNAMIC_DRAW);
+                glDrawArrays(GL_LINES, 0, 2);
+            } else {
+                // Foundation rectangle drag.
+                float x0 = std::min(buildDragStart_.x, gx) - gs * 0.5f;
+                float x1 = std::max(buildDragStart_.x, gx) + gs * 0.5f;
+                float z0 = std::min(buildDragStart_.y, gz) - gs * 0.5f;
+                float z1 = std::max(buildDragStart_.y, gz) + gs * 0.5f;
+                auto yAt = [&](float x, float z) {
+                    return terrain_.heightAtWorld(x, z) + 0.5f;
+                };
+                float pts[5][3] = {
+                    {x0, yAt(x0, z0), z0},
+                    {x1, yAt(x1, z0), z0},
+                    {x1, yAt(x1, z1), z1},
+                    {x0, yAt(x0, z1), z1},
+                    {x0, yAt(x0, z0), z0},
+                };
+                glBufferData(GL_ARRAY_BUFFER, sizeof(pts), pts, GL_DYNAMIC_DRAW);
+                glDrawArrays(GL_LINE_STRIP, 0, 5);
+            }
+
             glEnable(GL_DEPTH_TEST);
             glBindVertexArray(0);
             glDeleteBuffers(1, &tmpVbo);
@@ -1392,13 +1492,64 @@ void App::drawBuildContent() {
     ImGui::TextDisabled("Build");
     ImGui::Separator();
 
+    // Mode slots: Foundation / Wall.
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    const float slotSz = 60.0f, gap = 6.0f;
+    const char* modeNames[] = { "Foundation", "Wall" };
+    for (int i = 0; i < 2; ++i) {
+        ImVec2 p0 = ImGui::GetCursorScreenPos();
+        ImVec2 p1 = ImVec2(p0.x + slotSz, p0.y + slotSz);
+        bool active = ((int)build_.mode() == i);
+        bool hover = ImGui::IsMouseHoveringRect(p0, p1);
+        ImU32 bg = active ? IM_COL32(80, 100, 140, 255) :
+                    hover  ? IM_COL32(60, 70, 90, 255) :
+                             IM_COL32(40, 45, 55, 255);
+        dl->AddRectFilled(p0, p1, bg, 6.0f);
+        ImU32 col = active ? IM_COL32(255, 230, 110, 255) : IM_COL32(180, 180, 180, 255);
+        if (i == 0) {
+            // Foundation icon: solid filled square.
+            float m = slotSz * 0.22f;
+            dl->AddRectFilled(ImVec2(p0.x + m, p0.y + m),
+                               ImVec2(p1.x - m, p1.y - m), col, 2.0f);
+        } else {
+            // Wall icon: thin horizontal bar.
+            float mx = slotSz * 0.18f;
+            float my = slotSz * 0.40f;
+            float mh = slotSz * 0.16f;
+            dl->AddRectFilled(ImVec2(p0.x + mx, p0.y + my),
+                              ImVec2(p1.x - mx, p0.y + my + mh), col, 2.0f);
+        }
+        ImGui::SetCursorScreenPos(p0);
+        char lbl[16]; std::snprintf(lbl, sizeof(lbl), "##bmode%d", i);
+        ImGui::InvisibleButton(lbl, ImVec2(slotSz, slotSz));
+        if (hover) ImGui::SetTooltip("%s", modeNames[i]);
+        if (ImGui::IsItemClicked()) build_.setMode((BuildSystem::Mode)i);
+        ImGui::SameLine(0, gap);
+    }
+    ImGui::NewLine();
+    ImGui::Text("Mode: %s", modeNames[(int)build_.mode()]);
+    ImGui::Separator();
+
     float w = build_.blockWidth(), h = build_.blockHeight();
     if (ImGui::SliderFloat("Block width",  &w, 0.5f, 16.0f, "%.2f")) build_.setBlockSize(w, h);
     if (ImGui::SliderFloat("Block height", &h, 0.5f, 16.0f, "%.2f")) build_.setBlockSize(w, h);
 
-    float sunk = build_.sunkDepth();
-    if (ImGui::SliderFloat("Foundation sink", &sunk, 0.0f, 0.95f, "%.2f"))
-        build_.setSunkDepth(sunk);
+    if (build_.mode() == BuildSystem::ModeFoundation) {
+        float sunk = build_.sunkDepth();
+        if (ImGui::SliderFloat("Foundation sink", &sunk, 0.0f, 0.95f, "%.2f"))
+            build_.setSunkDepth(sunk);
+    } else {
+        float wt = build_.wallThickness();
+        if (ImGui::SliderFloat("Wall thickness", &wt, 0.1f, 4.0f, "%.2f"))
+            build_.setWallThickness(wt);
+        const char* edgeNames[] = { "+X edge", "+Z edge", "-X edge", "-Z edge" };
+        int we = build_.wallEdge();
+        if (ImGui::Combo("Wall edge (R)", &we, edgeNames, 4))
+            build_.setWallEdge(we);
+        ImGui::TextWrapped("R cycles the edge the wall sits on (+X/+Z/-X/-Z). "
+                           "Drag on a block top to run a wall along that edge. "
+                           "Walls only place where a block supports them.");
+    }
 
     float step = build_.gridStep();
     if (ImGui::SliderFloat("Grid step", &step, 0.25f, 8.0f, "%.2f"))
@@ -1436,11 +1587,17 @@ void App::drawBuildContent() {
     }
 
     ImGui::Separator();
-    ImGui::TextWrapped("Click terrain + drag: stretch a rectangle to fill with "
-                       "foundation blocks (same level as neighbours). "
-                       "Click a block's SIDE face: extend the foundation. "
-                       "Click a block's TOP face: place a wall on top. "
-                       "Ctrl+drag: erase blocks in the rectangle. Del: remove selected.");
+    if (build_.mode() == BuildSystem::ModeFoundation) {
+        ImGui::TextWrapped("Drag on terrain: rectangle of foundation blocks "
+                           "(sunk, same level as neighbours). "
+                           "Click block side: extend foundation. "
+                           "Ctrl+drag: erase. Del: remove selected.");
+    } else {
+        ImGui::TextWrapped("Drag on block TOP along an edge: thin wall line "
+                           "following that edge. Walls only stand on a "
+                           "supporting block's rim, not its centre. "
+                           "Ctrl+drag: erase. Del: remove selected.");
+    }
 }
 
 void App::drawTerrainContent() {
@@ -1592,9 +1749,13 @@ void App::drawHelpOverlay() {
     } else if (toolMode_ == ToolBuild) {
         ImGui::Separator();
         ImGui::TextUnformatted("Build tool:");
-        ImGui::BulletText("Click+drag terrain: rectangle fill");
-        ImGui::BulletText("Click block side: extend foundation");
-        ImGui::BulletText("Click block top: place wall");
+        if (build_.mode() == BuildSystem::ModeFoundation) {
+            ImGui::BulletText("Drag terrain: foundation rectangle");
+            ImGui::BulletText("Click block side: extend foundation");
+        } else {
+            ImGui::BulletText("Drag block top: wall on edge");
+            ImGui::BulletText("R: cycle wall edge (+X/+Z/-X/-Z)");
+        }
         ImGui::BulletText("Ctrl+drag: erase rectangle");
         ImGui::BulletText("Del: remove selected block");
     } else {
@@ -1618,8 +1779,9 @@ void App::drawHelpOverlay() {
                     props_.count(),
                     props_.selectedId() >= 0 ? std::to_string(props_.selectedId()).c_str() : "none");
     } else if (toolMode_ == ToolBuild) {
-        ImGui::Text("Blocks: %d   Selected: %s",
-                    build_.count(),
+        const char* mn = build_.mode() == BuildSystem::ModeFoundation ? "Foundation" : "Wall";
+        ImGui::Text("Blocks: %d  Mode: %s  Selected: %s",
+                    build_.count(), mn,
                     selectedBlockId_ >= 0 ? std::to_string(selectedBlockId_).c_str() : "none");
     } else {
         const char* dm = vertexEditor_.dragMode() == VertexEditor::FreeXYZ  ? "Free XYZ" :

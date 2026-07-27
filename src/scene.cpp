@@ -388,6 +388,7 @@ bool App::saveScene(const std::string& path) {
         bk.obj["r"]  = json::Value(b.color.r);
         bk.obj["g"]  = json::Value(b.color.g);
         bk.obj["b"]  = json::Value(b.color.b);
+        bk.obj["yaw"] = json::Value(b.yaw);
         blocksArr.arr.push_back(bk);
     }
     root.obj["blocks"] = blocksArr;
@@ -614,7 +615,8 @@ bool App::loadScene(const std::string& path) {
             glm::vec3 size((float)bk["sx"].asNum(), (float)bk["sy"].asNum(), (float)bk["sz"].asNum());
             glm::vec3 color((float)bk["r"].asNum(0.55f), (float)bk["g"].asNum(0.45f), (float)bk["b"].asNum(0.35f));
             BuildSystem::BlockType type = (BuildSystem::BlockType)(int)bk["type"].asNum(BuildSystem::Wall);
-            build_.placeBlock(center, size, type, color);
+            float yaw = (float)bk["yaw"].asNum(0.0);
+            build_.placeBlock(center, size, type, color, yaw);
         }
     }
 

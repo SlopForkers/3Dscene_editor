@@ -11,16 +11,24 @@ class Terrain;
 class BuildSystem {
 public:
     enum BlockType { Foundation = 0, Wall = 1 };
+    enum Mode { ModeFoundation = 0, ModeWall = 1 };
 
     struct Block {
         glm::vec3 position = glm::vec3(0.0f);   // centre
-        glm::vec3 size     = glm::vec3(2.0f);   // full dimensions
+        glm::vec3 size     = glm::vec3(2.0f);   // full dimensions (pre-yaw)
         glm::vec3 color    = glm::vec3(0.6f);
         BlockType type     = Wall;
+        float     yaw      = 0.0f;              // rotation around Y (radians)
         int id             = 0;
 
-        glm::vec3 min() const { return position - size * 0.5f; }
-        glm::vec3 max() const { return position + size * 0.5f; }
+        // Axis-aligned footprint. For yaw near 90°/270° the X and Z swap.
+        glm::vec3 aabbSize() const {
+            float n = std::fmod(std::abs(yaw), 3.14159265f);
+            bool rotated = n > 0.5f && n < 2.5f;
+            return rotated ? glm::vec3(size.z, size.y, size.x) : size;
+        }
+        glm::vec3 min() const { return position - aabbSize() * 0.5f; }
+        glm::vec3 max() const { return position + aabbSize() * 0.5f; }
         glm::vec3 top() const { return position + glm::vec3(0, size.y * 0.5f, 0); }
         glm::vec3 bottom() const { return position - glm::vec3(0, size.y * 0.5f, 0); }
     };
@@ -42,6 +50,22 @@ public:
     void  setColor(const glm::vec3& c) { color_ = c; }
     const glm::vec3& color() const { return color_; }
 
+    // Active placement mode (foundation vs wall) and wall rotation.
+    void setMode(Mode m) { mode_ = m; }
+    Mode mode() const { return mode_; }
+    void setWallThickness(float t) { wallThickness_ = std::max(0.1f, t); }
+    float wallThickness() const { return wallThickness_; }
+    // Wall edge rotation: 0=+X, 1=+Z, 2=-X, 3=-Z (which edge of the block the
+    // wall sits on). R cycles through these 4 positions.
+    int  wallEdge() const { return wallEdge_; }
+    void setWallEdge(int e) { wallEdge_ = ((e % 4) + 4) % 4; }
+    void rotateWallEdge() { wallEdge_ = (wallEdge_ + 1) % 4; }
+    // Does the wall run along X (edges +Z/-Z) or Z (edges +X/-X)?
+    bool wallAlongX() const { return wallEdge_ == 1 || wallEdge_ == 3; }
+    // Signed offset of the wall centre from the block centre along the
+    // perpendicular axis (in world units, including thickness/2).
+    float wallEdgeOffset(float halfSize) const;
+
     // Compute a placement from a world ray. If it hits a block face, the new
     // block snaps adjacent on that face. Otherwise it raycasts the terrain and
     // produces a foundation block (sunk into the ground). Returns true if a
@@ -53,7 +77,7 @@ public:
 
     // Place a block with explicit parameters. Returns its id.
     int  placeBlock(const glm::vec3& center, const glm::vec3& size,
-                    BlockType type, const glm::vec3& color);
+                    BlockType type, const glm::vec3& color, float yaw = 0.0f);
 
     void removeBlock(int id);
     void clear();
@@ -76,6 +100,16 @@ public:
     // blocks. Joins any adjacent foundation at the same Y level. Returns count.
     int  fillRect(const Terrain& terrain,
                   float x0, float z0, float x1, float z1, BlockType type);
+    // Place wall plates along a straight line on top of supporting blocks.
+    // The line runs along X (alongX=true) or Z (alongX=false) at a fixed
+    // coordinate (the edge of the supporting block). baseY is the supporting
+    // top. Walls are thin plates oriented perpendicular to the edge. Returns
+    // the number placed.
+    int  fillWallLine(float startCoord, float endCoord, float fixedCoord,
+                      float baseY, bool alongX);
+    // Compute the wall line parameters (fixed coord + along axis) for placing a
+    // wall on the edge of the picked block, given the current wall edge.
+    void wallLineParamsFor(const Block& support, float& outFixed, bool& outAlongX) const;
     // Erase all blocks within `radius` (XZ) of `worldPos`.
     int  eraseArea(const glm::vec3& worldPos, float radius);
     // Erase all blocks within a grid-aligned rectangle.
@@ -87,11 +121,12 @@ public:
     void render(const Shader& shader, const glm::mat4& viewProj,
                 const glm::vec3& lightDir, const glm::vec3& camPos) const;
 
-    // Render a semi-transparent ghost block plus a wireframe outline.
+    // Render a semi-transparent ghost block (caller draws the wireframe
+    // outline separately via renderWireframeBox).
     void renderGhost(const Shader& shader, const glm::mat4& viewProj,
                      const glm::vec3& lightDir, const glm::vec3& camPos,
                      const glm::vec3& center, const glm::vec3& size,
-                     const glm::vec3& color) const;
+                     const glm::vec3& color, float yaw) const;
 
     // Render a wireframe outline around the block with the given id (used for
     // the selected block highlight).
@@ -102,7 +137,7 @@ public:
     // preview outline).
     void renderWireframeBox(const Shader& shader, const glm::mat4& viewProj,
                             const glm::vec3& center, const glm::vec3& size,
-                            const glm::vec3& color) const;
+                            const glm::vec3& color, float yaw) const;
 
     // Reproject foundation blocks after terrain edits so they remain sunk at
     // the new height. Only blocks within radius of `center` are updated.
@@ -119,6 +154,10 @@ private:
     float gridStep_ = 2.0f;
     glm::vec3 color_ = glm::vec3(0.55f, 0.45f, 0.35f);
 
+    Mode  mode_ = ModeFoundation;
+    float wallThickness_ = 0.4f;
+    int   wallEdge_ = 0;  // 0=+X, 1=+Z, 2=-X, 3=-Z
+
     // Shared cube mesh (positions + normals, indexed).
     GLuint vao_ = 0, vbo_ = 0, ibo_ = 0;
     int    indexCount_ = 0;
@@ -130,6 +169,6 @@ private:
     void  drawCube(const Shader& shader, const glm::mat4& viewProj,
                    const glm::vec3& lightDir, const glm::vec3& camPos,
                    const glm::vec3& center, const glm::vec3& size,
-                   const glm::vec3& color, float alpha) const;
+                   const glm::vec3& color, float alpha, float yaw) const;
     float snapToGrid(float v) const;
 };

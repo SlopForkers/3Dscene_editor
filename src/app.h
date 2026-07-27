@@ -146,9 +146,13 @@ private:
     glm::vec3 ghostCenter_ = glm::vec3(0.0f);
     glm::vec3 ghostSize_   = glm::vec3(2.0f);
     BuildSystem::BlockType ghostType_ = BuildSystem::Foundation;
-    // Drag-rectangle area fill: start cell recorded on press, fill on release.
+    // Drag state: rectangle for foundation, line for walls.
     bool  buildDragging_ = false;
     glm::vec2 buildDragStart_ = glm::vec2(0.0f); // (x, z) world grid coords
+    bool  buildDragOnBlocks_ = false;  // true = wall drag, false = foundation drag
+    float buildDragBaseY_ = 0.0f;      // top Y of the supporting layer
+    float buildDragFixed_ = 0.0f;     // fixed coordinate for wall line (edge pos)
+    bool  buildDragAlongX_ = false;    // wall runs along X (true) or Z (false)
 
     // Selection box wireframe VAO/VBO (unit cube, reused per frame).
     GLuint boxVao_ = 0, boxVbo_ = 0;

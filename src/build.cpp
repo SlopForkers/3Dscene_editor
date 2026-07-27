@@ -232,6 +232,84 @@ int BuildSystem::fillRect(const Terrain& terrain,
     return placed;
 }
 
+// Wall sits fully on top of the foundation, inner face flush with the edge.
+// Centre is therefore halfSize - wallThickness/2 from the block centre
+// (measured inward from the rim).
+float BuildSystem::wallEdgeOffset(float halfSize) const {
+    float off = halfSize - wallThickness_ * 0.5f;
+    return (wallEdge_ == 0 || wallEdge_ == 1) ? off : -off;
+}
+
+void BuildSystem::wallLineParamsFor(const Block& support, float& outFixed,
+                                     bool& outAlongX) const {
+    glm::vec3 sz = support.aabbSize();
+    if (wallEdge_ == 0 || wallEdge_ == 2) {
+        // +X / -X edge: wall runs along Z, fixed coord is X.
+        outAlongX = false;
+        // Snap the block centre to the grid, then add the edge offset
+        // (un-snapped) so the wall lands on the rim, not the grid cell centre.
+        float cx = std::round(support.position.x / gridStep_) * gridStep_;
+        outFixed  = cx + wallEdgeOffset(sz.x * 0.5f);
+    } else {
+        // +Z / -Z edge: wall runs along X, fixed coord is Z.
+        outAlongX = true;
+        float cz = std::round(support.position.z / gridStep_) * gridStep_;
+        outFixed  = cz + wallEdgeOffset(sz.z * 0.5f);
+    }
+}
+
+int BuildSystem::fillWallLine(float startCoord, float endCoord,
+                                float fixedCoord, float baseY, bool alongX) {
+    if (endCoord < startCoord) std::swap(startCoord, endCoord);
+    int placed = 0;
+    // Wall orientation encoded in size: along X -> thin Z, along Z -> thin X.
+    glm::vec3 size = alongX
+        ? glm::vec3(blockW_, blockH_, wallThickness_)
+        : glm::vec3(wallThickness_, blockH_, blockW_);
+    float halfThin = wallThickness_ * 0.5f;
+    float topTol = 0.05f;
+
+    for (float c = snapToGrid(startCoord); c <= endCoord + 1e-4f; c += gridStep_) {
+        float cx = alongX ? c : fixedCoord;
+        float cz = alongX ? fixedCoord : c;
+        float wallCenterY = baseY + blockH_ * 0.5f;
+
+        // Skip if a wall already occupies this exact spot.
+        bool occupied = false;
+        for (const auto& b : blocks_) {
+            if (b.type != Wall) continue;
+            if (std::abs(b.position.x - cx) < 0.05f &&
+                std::abs(b.position.z - cz) < 0.05f &&
+                std::abs(b.position.y - wallCenterY) < 0.05f) {
+                occupied = true; break;
+            }
+        }
+        if (occupied) continue;
+
+        // Find a supporting block whose top ~= baseY AND whose XZ AABB
+        // overlaps the wall's XZ footprint (the wall sits on the rim, so its
+        // centre is offset from the block centre — a centre-distance test
+        // would miss it).
+        bool supported = false;
+        glm::vec3 wmn(cx - size.x * 0.5f, 0, cz - size.z * 0.5f);
+        glm::vec3 wmx(cx + size.x * 0.5f, 0, cz + size.z * 0.5f);
+        for (const auto& b : blocks_) {
+            if (std::abs(b.max().y - baseY) > topTol) continue;
+            glm::vec3 bmn = b.min(), bmx = b.max();
+            // XZ overlap test.
+            if (wmn.x < bmx.x && wmx.x > bmn.x &&
+                wmn.z < bmx.z && wmx.z > bmn.z) {
+                supported = true; break;
+            }
+        }
+        if (!supported) continue;
+
+        placeBlock(glm::vec3(cx, wallCenterY, cz), size, Wall, color_, 0.0f);
+        ++placed;
+    }
+    return placed;
+}
+
 int BuildSystem::eraseRect(float x0, float z0, float x1, float z1) {
     if (x1 < x0) std::swap(x0, x1);
     if (z1 < z0) std::swap(z0, z1);
@@ -246,12 +324,13 @@ int BuildSystem::eraseRect(float x0, float z0, float x1, float z1) {
 }
 
 int BuildSystem::placeBlock(const glm::vec3& center, const glm::vec3& size,
-                             BlockType type, const glm::vec3& color) {
+                             BlockType type, const glm::vec3& color, float yaw) {
     Block b;
     b.position = center;
     b.size = size;
     b.color = color;
     b.type = type;
+    b.yaw = yaw;
     b.id = nextId_++;
     blocks_.push_back(b);
     return b.id;
@@ -334,9 +413,10 @@ int BuildSystem::pick(const glm::vec3& rayOrigin, const glm::vec3& rayDir,
 void BuildSystem::drawCube(const Shader& shader, const glm::mat4& viewProj,
                             const glm::vec3& lightDir, const glm::vec3& camPos,
                             const glm::vec3& center, const glm::vec3& size,
-                            const glm::vec3& color, float alpha) const {
+                            const glm::vec3& color, float alpha, float yaw) const {
     glm::mat4 m(1.0f);
     m = glm::translate(m, center);
+    if (std::abs(yaw) > 1e-4f) m = glm::rotate(m, yaw, glm::vec3(0, 1, 0));
     m = glm::scale(m, size);
     shader.setMat4("uModel", m);
     shader.setMat4("uViewProj", viewProj);
@@ -356,20 +436,20 @@ void BuildSystem::render(const Shader& shader, const glm::mat4& viewProj,
     shader.use();
     for (const auto& b : blocks_) {
         drawCube(shader, viewProj, lightDir, camPos,
-                 b.position, b.size, b.color, 1.0f);
+                 b.position, b.size, b.color, 1.0f, b.yaw);
     }
 }
 
 void BuildSystem::renderGhost(const Shader& shader, const glm::mat4& viewProj,
                                const glm::vec3& lightDir, const glm::vec3& camPos,
                                const glm::vec3& center, const glm::vec3& size,
-                               const glm::vec3& color) const {
+                               const glm::vec3& color, float yaw) const {
     // Semi-transparent fill.
     shader.use();
     glEnable(GL_BLEND);
     glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
     glDepthMask(GL_FALSE);
-    drawCube(shader, viewProj, lightDir, camPos, center, size, color, 0.35f);
+    drawCube(shader, viewProj, lightDir, camPos, center, size, color, 0.35f, yaw);
     glDepthMask(GL_TRUE);
     glDisable(GL_BLEND);
 
@@ -384,16 +464,18 @@ void BuildSystem::renderWireframe(const Shader& shader,
                                     int id, const glm::vec3& color) const {
     const Block* b = findBlock(id);
     if (!b) return;
-    renderWireframeBox(shader, viewProj, b->position, b->size, color);
+    renderWireframeBox(shader, viewProj, b->position, b->size, color, b->yaw);
 }
 
 void BuildSystem::renderWireframeBox(const Shader& shader,
                                         const glm::mat4& viewProj,
                                         const glm::vec3& center,
                                         const glm::vec3& size,
-                                        const glm::vec3& color) const {
+                                        const glm::vec3& color,
+                                        float yaw) const {
     glm::mat4 m(1.0f);
     m = glm::translate(m, center);
+    if (std::abs(yaw) > 1e-4f) m = glm::rotate(m, yaw, glm::vec3(0, 1, 0));
     m = glm::scale(m, size);
     shader.use();
     shader.setMat4("uViewProj", viewProj * m);
