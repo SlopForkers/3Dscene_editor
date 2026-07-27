@@ -59,6 +59,24 @@ FetchContent_Declare(
 )
 FetchContent_MakeAvailable(imgui)
 
+# cgltf (single-header glTF 2.0 parser, used for glTF/VRM import)
+FetchContent_Declare(
+    cgltf
+    GIT_REPOSITORY https://github.com/jkuhlmann/cgltf.git
+    GIT_TAG        v1.15
+    GIT_SHALLOW    TRUE
+)
+FetchContent_MakeAvailable(cgltf)
+
+# stb (single-header libraries, in particular stb_image for textures)
+FetchContent_Declare(
+    stb
+    GIT_REPOSITORY https://github.com/nothings/stb.git
+    GIT_TAG        master
+    GIT_SHALLOW    TRUE
+)
+FetchContent_MakeAvailable(stb)
+
 # ---------------------------------------------------------------------------
 # GLAD2 loader (pre-generated, see external/glad)
 # ---------------------------------------------------------------------------
@@ -82,10 +100,16 @@ target_include_directories(dear_imgui PUBLIC ${IMGUI_DIR} ${IMGUI_DIR}/backends)
 target_link_libraries(dear_imgui PUBLIC glfw glad)
 
 # ---------------------------------------------------------------------------
-# stb_image (for optional texture loading, single header vendored)
+# stb_image (texture loading, single header from the stb FetchContent)
 # ---------------------------------------------------------------------------
-add_library(stb INTERFACE)
-target_include_directories(stb INTERFACE ${CMAKE_SOURCE_DIR}/third_party)
+add_library(stb_image STATIC
+    ${CMAKE_SOURCE_DIR}/src/stb_image_impl.cpp)
+target_include_directories(stb_image PUBLIC ${stb_SOURCE_DIR})
+target_link_libraries(stb_image PUBLIC glad)
+
+# cgltf (header only; implementation compiled in the app)
+add_library(cgltf INTERFACE)
+target_include_directories(cgltf INTERFACE ${cgltf_SOURCE_DIR})
 
 # ---------------------------------------------------------------------------
 # Main application
@@ -104,13 +128,28 @@ set(SOURCES
     src/brush.h
     src/input.cpp
     src/input.h
+    src/model.cpp
+    src/model.h
+    src/prop.cpp
+    src/prop.h
+    src/file_dialog.cpp
+    src/file_dialog.h
 )
 
 add_executable(scene_editor ${SOURCES})
-target_link_libraries(scene_editor PRIVATE glfw glad dear_imgui glm stb)
+target_link_libraries(scene_editor PRIVATE
+    glfw glad dear_imgui glm stb_image cgltf)
 target_include_directories(scene_editor PRIVATE ${CMAKE_SOURCE_DIR}/src)
 # Prevent GLFW from pulling in the system GL header; glad provides GL.
-target_compile_definitions(scene_editor PRIVATE GLFW_INCLUDE_NONE)
+target_compile_definitions(scene_editor PRIVATE
+    GLFW_INCLUDE_NONE
+    CGLTF_WRITE_UNCOMPRESSED_BINARY
+)
+
+# Win32 common dialogs for the open-file dialog.
+if(WIN32)
+    target_link_libraries(scene_editor PRIVATE comdlg32)
+endif()
 
 # Copy shaders next to the executable so they can be loaded at runtime.
 add_custom_command(TARGET scene_editor POST_BUILD

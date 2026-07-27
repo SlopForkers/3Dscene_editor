@@ -5,14 +5,19 @@
 #include "terrain.h"
 #include "brush.h"
 #include "shader.h"
+#include "prop.h"
+#include <memory>
 #include <string>
+#include <vector>
+
+class Model;
 
 class App {
 public:
     App();
     ~App();
 
-    int run();
+    int run(const std::vector<std::string>& importArgs = {});
 
 private:
     bool initWindow();
@@ -27,6 +32,15 @@ private:
     // ImGui helpers
     void drawMainPanel();
     void drawHelpOverlay();
+    void drawPropsPanel();
+    void drawSelectionBox();
+
+    // Tool modes: 0 = terrain brush, 1 = prop select/place
+    enum ToolMode { ToolPaint = 0, ToolProp = 1 };
+    int toolMode_ = ToolPaint;
+
+    // Import a glTF/VRM file and spawn a prop at the terrain centre.
+    void importModel(const std::string& path);
 
     GLFWwindow* window_ = nullptr;
     int fbWidth_  = 0;
@@ -39,6 +53,7 @@ private:
     BrushCursor brushCursor_;
     Shader terrainShader_;
     Shader lineShader_;
+    Shader propShader_;
 
     // Brush state
     Terrain::BrushParams brush_;
@@ -49,6 +64,10 @@ private:
     bool panning_  = false;
     glm::vec3 lastPaintPoint_ = glm::vec3(0.0f);
     bool  hasPaintPoint_ = false;
+
+    // Prop interaction
+    bool draggingProp_ = false;
+    glm::vec3 propDragOffset_ = glm::vec3(0.0f);
 
     // Display options
     bool wireframe_ = false;
@@ -69,4 +88,14 @@ private:
     bool continuousStroke_ = true;
 
     std::string shaderDir_;
+
+    // Props
+    PropManager props_;
+    // Shared model library keeps loaded models alive while referenced by props.
+    std::vector<std::shared_ptr<Model>> modelLibrary_;
+    float propTargetSize_ = 6.0f;
+
+    // Selection box wireframe VAO/VBO (unit cube, reused per frame).
+    GLuint boxVao_ = 0, boxVbo_ = 0;
 };
+

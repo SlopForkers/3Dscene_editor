@@ -1,5 +1,7 @@
 #include "app.h"
 #include "input.h"
+#include "model.h"
+#include "file_dialog.h"
 #include <imgui.h>
 #include <backends/imgui_impl_glfw.h>
 #include <backends/imgui_impl_opengl3.h>
@@ -78,6 +80,10 @@ bool App::initOpenGL() {
                                    shaderDir_ + "/line.frag")) {
         return false;
     }
+    if (!propShader_.loadFromFile(shaderDir_ + "/prop.vert",
+                                   shaderDir_ + "/prop.frag")) {
+        return false;
+    }
 
     glEnable(GL_DEPTH_TEST);
     glEnable(GL_MULTISAMPLE);
@@ -87,6 +93,23 @@ bool App::initOpenGL() {
     terrain_.generateHills();
     brushCursor_.create();
     brushCursor_.setShape(brush_.radius);
+
+    // Unit-cube wireframe (24 vertices, 12 edges) for prop selection boxes.
+    {
+        static const float cubeEdges[24][3] = {
+            {0,0,0},{1,0,0}, {1,0,0},{1,1,0}, {1,1,0},{0,1,0}, {0,1,0},{0,0,0},
+            {0,0,1},{1,0,1}, {1,0,1},{1,1,1}, {1,1,1},{0,1,1}, {0,1,1},{0,0,1},
+            {0,0,0},{0,0,1}, {1,0,0},{1,0,1}, {1,1,0},{1,1,1}, {0,1,0},{0,1,1},
+        };
+        glGenVertexArrays(1, &boxVao_);
+        glGenBuffers(1, &boxVbo_);
+        glBindVertexArray(boxVao_);
+        glBindBuffer(GL_ARRAY_BUFFER, boxVbo_);
+        glBufferData(GL_ARRAY_BUFFER, sizeof(cubeEdges), cubeEdges, GL_STATIC_DRAW);
+        glEnableVertexAttribArray(0);
+        glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 3 * sizeof(float), (void*)0);
+        glBindVertexArray(0);
+    }
     return true;
 }
 
@@ -113,17 +136,24 @@ void App::shutdown() {
         ImGui::DestroyContext();
         brushCursor_.destroy();
         terrain_.destroy();
+        if (boxVao_) { glDeleteVertexArrays(1, &boxVao_); boxVao_ = 0; }
+        if (boxVbo_) { glDeleteBuffers(1, &boxVbo_); boxVbo_ = 0; }
+        props_.clear();
+        modelLibrary_.clear();
         glfwDestroyWindow(window_);
         window_ = nullptr;
         glfwTerminate();
     }
 }
 
-int App::run() {
+int App::run(const std::vector<std::string>& importArgs) {
     if (!initWindow()) return 1;
     g_input.init(window_);
     if (!initOpenGL()) { shutdown(); return 1; }
     initImGui();
+
+    // Import any models passed on the command line (useful for testing).
+    for (const auto& p : importArgs) importModel(p);
 
     lastTime_ = glfwGetTime();
     while (!glfwWindowShouldClose(window_)) {
@@ -166,6 +196,21 @@ int App::run() {
     return 0;
 }
 
+void App::importModel(const std::string& path) {
+    auto model = std::make_shared<Model>();
+    if (!model->loadFromFile(path)) {
+        std::cerr << "Failed to load model: " << path << "\n";
+        return;
+    }
+    modelLibrary_.push_back(model);
+
+    glm::vec3 spawn = camera_.target();
+    float h = terrain_.heightAtWorld(spawn.x, spawn.z);
+    std::filesystem::path fp(path);
+    props_.addProp(model, spawn, h, propTargetSize_, fp.filename().string());
+    toolMode_ = ToolProp;
+}
+
 void App::handleInput(float dt) {
     ImGuiIO& io = ImGui::GetIO();
 
@@ -196,31 +241,87 @@ void App::handleInput(float dt) {
         camera_.zoom(-g_input.scrollDelta() * 0.1f);
     }
 
-    // Painting (left button)
-    if (g_input.mousePressed(Input::Left)) {
-        painting_ = !overUI;
-        hasPaintPoint_ = false;
-    }
-    if (g_input.mouseReleased(Input::Left)) {
+    // Tab toggles between terrain brush and prop tools.
+    if (g_input.keyPressed(GLFW_KEY_TAB)) {
+        toolMode_ = (toolMode_ == ToolPaint) ? ToolProp : ToolPaint;
         painting_ = false;
-        hasPaintPoint_ = false;
+        draggingProp_ = false;
     }
-    if (painting_) {
-        // Convert window-space cursor to framebuffer-space for ray casting.
-        double sx = g_input.mouseX() * (double)fbWidth_  / (double)winWidth_;
-        double sy = g_input.mouseY() * (double)fbHeight_ / (double)winHeight_;
-        glm::vec3 origin, dir;
-        camera_.screenToRay((float)sx, (float)sy, origin, dir);
-        glm::vec3 hit;
-        if (terrain_.raycast(origin, dir, hit)) {
-            // Scale strength by dt for framerate-independent continuous strokes.
-            float amount = continuousStroke_ ? brush_.strength * dt * 60.0f
-                                              : brush_.strength;
-            Terrain::BrushParams step = brush_;
-            step.strength = amount;
-            terrain_.applyBrush(step, hit);
-            lastPaintPoint_ = hit;
-            hasPaintPoint_ = true;
+
+    // Left-button behaviour depends on the active tool.
+    if (toolMode_ == ToolPaint) {
+        // Painting (left button)
+        if (g_input.mousePressed(Input::Left)) {
+            painting_ = !overUI;
+            hasPaintPoint_ = false;
+        }
+        if (g_input.mouseReleased(Input::Left)) {
+            painting_ = false;
+            hasPaintPoint_ = false;
+        }
+        if (painting_) {
+            double sx = g_input.mouseX() * (double)fbWidth_  / (double)winWidth_;
+            double sy = g_input.mouseY() * (double)fbHeight_ / (double)winHeight_;
+            glm::vec3 origin, dir;
+            camera_.screenToRay((float)sx, (float)sy, origin, dir);
+            glm::vec3 hit;
+            if (terrain_.raycast(origin, dir, hit)) {
+                float amount = continuousStroke_ ? brush_.strength * dt * 60.0f
+                                                  : brush_.strength;
+                Terrain::BrushParams step = brush_;
+                step.strength = amount;
+                terrain_.applyBrush(step, hit);
+                lastPaintPoint_ = hit;
+                hasPaintPoint_ = true;
+            }
+        }
+    } else {
+        // Prop tool: click selects/moves props.
+        if (g_input.mousePressed(Input::Left) && !overUI) {
+            double sx = g_input.mouseX() * (double)fbWidth_  / (double)winWidth_;
+            double sy = g_input.mouseY() * (double)fbHeight_ / (double)winHeight_;
+            glm::vec3 origin, dir;
+            camera_.screenToRay((float)sx, (float)sy, origin, dir);
+
+            int picked = props_.pick(origin, dir);
+            if (picked >= 0) {
+                props_.select(picked);
+                draggingProp_ = true;
+                glm::vec3 hit;
+                if (terrain_.raycast(origin, dir, hit)) {
+                    Prop* p = props_.selected();
+                    if (p) propDragOffset_ = p->position - hit;
+                }
+            } else {
+                glm::vec3 hit;
+                if (terrain_.raycast(origin, dir, hit) && props_.selected()) {
+                    Prop* p = props_.selected();
+                    if (p) {
+                        propDragOffset_ = glm::vec3(0.0f);
+                        p->position = glm::vec3(hit.x, p->position.y, hit.z);
+                        draggingProp_ = true;
+                    }
+                }
+            }
+        }
+        if (g_input.mouseReleased(Input::Left)) {
+            draggingProp_ = false;
+        }
+        if (draggingProp_ && props_.selected()) {
+            double sx = g_input.mouseX() * (double)fbWidth_  / (double)winWidth_;
+            double sy = g_input.mouseY() * (double)fbHeight_ / (double)winHeight_;
+            glm::vec3 origin, dir;
+            camera_.screenToRay((float)sx, (float)sy, origin, dir);
+            glm::vec3 hit;
+            if (terrain_.raycast(origin, dir, hit)) {
+                Prop* p = props_.selected();
+                if (p) {
+                    float above = p->position.y - terrain_.heightAtWorld(p->position.x, p->position.z);
+                    p->position = glm::vec3(hit.x + propDragOffset_.x,
+                                            terrain_.heightAtWorld(hit.x, hit.z) + above,
+                                            hit.z + propDragOffset_.z);
+                }
+            }
         }
     }
 
@@ -254,8 +355,16 @@ void App::renderScene() {
 
     terrain_.draw();
 
-    // Brush cursor (show both while hovering and while painting)
-    if (showCursor_) {
+    // Props (after terrain, before cursor overlay). Props use their own shader.
+    if (props_.count() > 0) {
+        propShader_.use();
+        props_.render(propShader_, vp, lightDir, camera_.position());
+    }
+    // Selection box for the currently selected prop.
+    drawSelectionBox();
+
+    // Brush cursor — only relevant in paint mode.
+    if (showCursor_ && toolMode_ == ToolPaint) {
         double sx = g_input.mouseX() * (double)fbWidth_  / (double)winWidth_;
         double sy = g_input.mouseY() * (double)fbHeight_ / (double)winHeight_;
         glm::vec3 origin, dir;
@@ -302,6 +411,7 @@ void App::renderImGui() {
     ImGui::NewFrame();
 
     drawMainPanel();
+    drawPropsPanel();
     if (showHelp_) drawHelpOverlay();
 
     ImGui::Render();
@@ -370,22 +480,138 @@ void App::drawMainPanel() {
 }
 
 void App::drawHelpOverlay() {
-    ImGui::SetNextWindowPos(ImVec2(float(fbWidth_) - 270, 10),
+    ImGui::SetNextWindowPos(ImVec2(float(fbWidth_) - 290, 10),
                             ImGuiCond_Always);
     ImGui::Begin("Help", &showHelp_,
                  ImGuiWindowFlags_NoResize | ImGuiWindowFlags_AlwaysAutoResize |
                  ImGuiWindowFlags_NoCollapse);
     ImGui::TextUnformatted("Controls:");
-    ImGui::BulletText("Left-drag: paint terrain");
+    ImGui::BulletText("Tab: toggle Brush / Prop tool");
     ImGui::BulletText("Right-drag: orbit camera");
     ImGui::BulletText("Middle-drag: pan camera");
     ImGui::BulletText("Scroll: zoom");
-    ImGui::BulletText("1..5: brush type");
+    if (toolMode_ == ToolPaint) {
+        ImGui::Separator();
+        ImGui::TextUnformatted("Brush tool:");
+        ImGui::BulletText("Left-drag: paint terrain");
+        ImGui::BulletText("1..5: brush type");
+    } else {
+        ImGui::Separator();
+        ImGui::TextUnformatted("Prop tool:");
+        ImGui::BulletText("Left-click prop: select");
+        ImGui::BulletText("Left-click ground: move selected");
+        ImGui::BulletText("Left-drag ground: drag selected");
+    }
+    ImGui::Separator();
     ImGui::BulletText("F: wireframe   H: help");
     ImGui::BulletText("ESC: quit");
     ImGui::Separator();
-    ImGui::Text("Brush: %s (%s)  R=%.1f  S=%.2f",
-                brushTypeName(brush_.type), falloffName(brush_.falloff),
-                brush_.radius, brush_.strength);
+    if (toolMode_ == ToolPaint) {
+        ImGui::Text("Brush: %s (%s)  R=%.1f  S=%.2f",
+                    brushTypeName(brush_.type), falloffName(brush_.falloff),
+                    brush_.radius, brush_.strength);
+    } else {
+        ImGui::Text("Props: %d   Selected: %s",
+                    props_.count(),
+                    props_.selectedId() >= 0 ? std::to_string(props_.selectedId()).c_str() : "none");
+    }
     ImGui::End();
+}
+
+void App::drawPropsPanel() {
+    ImGui::SetNextWindowPos(ImVec2(310, 10), ImGuiCond_FirstUseEver);
+    ImGui::SetNextWindowSize(ImVec2(300, 0), ImGuiCond_FirstUseEver);
+    ImGui::Begin("Props");
+
+    if (ImGui::Button("Import glTF / VRM...")) {
+        std::string path = openFileDialog();
+        if (!path.empty()) importModel(path);
+    }
+    ImGui::SameLine();
+    ImGui::SliderFloat("Size", &propTargetSize_, 1.0f, 40.0f, "%.1f");
+
+    ImGui::Separator();
+    ImGui::Text("Tool: %s", toolMode_ == ToolPaint ? "Brush" : "Prop");
+    ImGui::SameLine();
+    if (ImGui::Button(toolMode_ == ToolPaint ? "Switch to Prop" : "Switch to Brush")) {
+        toolMode_ = (toolMode_ == ToolPaint) ? ToolProp : ToolPaint;
+    }
+
+    ImGui::Separator();
+    ImGui::Text("Placed props: %d", props_.count());
+    ImGui::BeginChild("proplist", ImVec2(0, 120), true);
+    for (const auto& p : props_.props()) {
+        bool sel = (p.id == props_.selectedId());
+        ImGui::PushID(p.id);
+        if (ImGui::Selectable(p.displayName.c_str(), sel)) {
+            props_.select(p.id);
+            toolMode_ = ToolProp;
+        }
+        ImGui::PopID();
+    }
+    ImGui::EndChild();
+
+    Prop* sel = props_.selected();
+    if (sel) {
+        ImGui::Separator();
+        ImGui::Text("Selected: %s", sel->displayName.c_str());
+        ImGui::DragFloat3("Position", &sel->position[0], 0.5f);
+        ImGui::SliderFloat("Yaw", &sel->rotationEuler.y, -3.14159f, 3.14159f, "%.2f");
+        ImGui::SliderFloat("Pitch", &sel->rotationEuler.x, -1.5708f, 1.5708f, "%.2f");
+        ImGui::SliderFloat("Roll", &sel->rotationEuler.z, -3.14159f, 3.14159f, "%.2f");
+        float uniformScale = sel->scale.x;
+        if (ImGui::SliderFloat("Scale", &uniformScale, 0.01f, 20.0f, "%.2f", ImGuiSliderFlags_Logarithmic)) {
+            sel->scale = glm::vec3(uniformScale);
+        }
+        if (ImGui::Button("Snap to ground")) {
+            float h = terrain_.heightAtWorld(sel->position.x, sel->position.z);
+            float bottom = sel->model ? sel->model->aabbMin().y : 0.0f;
+            sel->position.y = h - bottom * sel->scale.y;
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Duplicate")) {
+            auto m = sel->model;
+            int newId = props_.addProp(m, sel->position,
+                                       terrain_.heightAtWorld(sel->position.x, sel->position.z),
+                                       0.0f, sel->displayName + " copy");
+            if (newId >= 0) {
+                Prop* np = props_.findProp(newId);
+                if (np) {
+                    np->rotationEuler = sel->rotationEuler;
+                    np->scale = sel->scale;
+                    np->position.y = sel->position.y;
+                }
+            }
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Delete")) {
+            props_.removeProp(sel->id);
+        }
+    }
+
+    ImGui::End();
+}
+
+void App::drawSelectionBox() {
+    const Prop* p = props_.selectedId() >= 0 ? props_.findProp(props_.selectedId()) : nullptr;
+    if (!p || !p->model || !p->model->valid()) return;
+
+    glm::vec3 mn, mx;
+    p->worldAabb(mn, mx);
+    glm::vec3 center = (mn + mx) * 0.5f;
+    glm::vec3 size = mx - mn;
+
+    // Scale the unit cube [0..1]^3 to the world AABB box.
+    glm::mat4 m(1.0f);
+    m = glm::translate(m, mn);
+    m = glm::scale(m, size);
+
+    glm::mat4 vp = camera_.projection() * camera_.view();
+    lineShader_.use();
+    lineShader_.setMat4("uViewProj", vp * m);
+    lineShader_.setVec3("uColor", glm::vec3(1.0f, 0.9f, 0.2f));
+
+    glBindVertexArray(boxVao_);
+    glDrawArrays(GL_LINES, 0, 24);
+    glBindVertexArray(0);
 }
