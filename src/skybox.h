@@ -35,7 +35,7 @@ public:
 
     GLuint texture() const { return tex_; }
     bool valid() const { return tex_ != 0; }
-    bool isDefault() const { return imported_; }
+    bool isDefault() const { return !imported_; }
     const std::string& importedPath() const { return importedPath_; }
 
 private:

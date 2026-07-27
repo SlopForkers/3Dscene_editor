@@ -300,7 +300,7 @@ bool App::saveScene(const std::string& path) {
 
     // Skybox.
     json::Value sky(json::Value::ObjectT);
-    if (skybox_.isDefault()) {
+    if (!skybox_.isDefault()) {
         sky.obj["path"] = json::Value(relPath(skybox_.importedPath(), baseDir));
     } else {
         sky.obj["path"] = json::Value("");

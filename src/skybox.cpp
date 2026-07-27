@@ -126,6 +126,7 @@ bool Skybox::loadEquirect(Shader& convertShader, const std::string& path) {
     stbi_set_flip_vertically_on_load(false);
     if (!data) {
         std::cerr << "Skybox: failed to load equirectangular image: " << path << "\n";
+        std::cerr << "Skybox: stb_image error: " << stbi_failure_reason() << "\n";
         return false;
     }
 
@@ -151,6 +152,18 @@ bool Skybox::loadEquirect(Shader& convertShader, const std::string& path) {
     GLuint fbo = 0;
     glGenFramebuffers(1, &fbo);
     glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+
+    // Need a color attachment to make the FBO complete before drawing.
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
+                            GL_TEXTURE_CUBE_MAP_POSITIVE_X, tex_, 0);
+    if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE) {
+        std::cerr << "Skybox: convert FBO incomplete (status "
+                  << std::hex << glCheckFramebufferStatus(GL_FRAMEBUFFER) << ")\n";
+        glBindFramebuffer(GL_FRAMEBUFFER, 0);
+        glDeleteFramebuffers(1, &fbo);
+        glDeleteTextures(1, &eqTex);
+        return false;
+    }
 
     GLint savedViewport[4] = {};
     glGetIntegerv(GL_VIEWPORT, savedViewport);

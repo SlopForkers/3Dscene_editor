@@ -116,6 +116,10 @@ private:
     bool showHelp_  = true;
     float cursorColor_[3] = {1.0f, 0.85f, 0.2f};
 
+    // Last terrain hit under the cursor (for overlay text), valid in paint mode.
+    bool brushHasHit_ = false;
+    glm::vec3 brushHit_ = glm::vec3(0.0f);
+
     // Lighting
     float lightAzimuth_ = 0.6f;
     float lightElevation_ = 0.9f;

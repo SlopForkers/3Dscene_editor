@@ -853,6 +853,7 @@ void App::renderScene() {
     }
 
     // Brush cursor — only relevant in paint mode.
+    brushHasHit_ = false;
     if (showCursor_ && toolMode_ == ToolPaint) {
         double sx = g_input.mouseX() * (double)fbWidth_  / (double)winWidth_;
         double sy = g_input.mouseY() * (double)fbHeight_ / (double)winHeight_;
@@ -860,6 +861,8 @@ void App::renderScene() {
         camera_.screenToRay((float)sx, (float)sy, origin, dir);
         glm::vec3 hit;
         if (terrain_.raycast(origin, dir, hit)) {
+            brushHasHit_ = true;
+            brushHit_ = hit;
             glm::vec3 c = strengthColor(brush_.strength);
             lineShader_.use();
             glm::mat4 model(1.0f);
@@ -915,6 +918,37 @@ void App::renderImGui() {
     drawLeftPanel();
     drawBrushBar();
     if (showHelp_) drawHelpOverlay();
+
+    // Brush value overlay: show radius/strength inside the cursor circle while
+    // Shift or Ctrl is held (the modifiers used to scrub them via scroll).
+    if (brushHasHit_ && toolMode_ == ToolPaint) {
+        bool shift = g_input.keyDown(GLFW_KEY_LEFT_SHIFT) ||
+                     g_input.keyDown(GLFW_KEY_RIGHT_SHIFT);
+        bool ctrl  = g_input.keyDown(GLFW_KEY_LEFT_CONTROL) ||
+                     g_input.keyDown(GLFW_KEY_RIGHT_CONTROL);
+        if (shift || ctrl) {
+            glm::vec4 clip = camera_.projection() * camera_.view() *
+                             glm::vec4(brushHit_, 1.0f);
+            if (clip.w > 0.0f) {
+                float ndcX = clip.x / clip.w;
+                float ndcY = clip.y / clip.w;
+                float px = (ndcX * 0.5f + 0.5f) * float(fbWidth_);
+                float py = (1.0f - (ndcY * 0.5f + 0.5f)) * float(fbHeight_);
+                char buf[32];
+                if (shift)
+                    std::snprintf(buf, sizeof(buf), "R %.1f", brush_.radius);
+                else
+                    std::snprintf(buf, sizeof(buf), "S %.2f", brush_.strength);
+                ImDrawList* dl = ImGui::GetForegroundDrawList();
+                ImVec2 ts = ImGui::CalcTextSize(buf);
+                ImVec2 pos(px - ts.x * 0.5f, py - ts.y * 0.5f);
+                dl->AddRectFilled(ImVec2(pos.x - 3, pos.y - 2),
+                                  ImVec2(pos.x + ts.x + 3, pos.y + ts.y + 2),
+                                  IM_COL32(0, 0, 0, 180), 3.0f);
+                dl->AddText(pos, IM_COL32(255, 255, 255, 255), buf);
+            }
+        }
+    }
 
     ImGui::Render();
     ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
