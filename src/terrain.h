@@ -8,6 +8,10 @@
 // Heights live in a flat array and are edited by brushes.
 class Terrain {
 public:
+    static constexpr int MAX_LAYERS     = 16;   // total paintable texture layers
+    static constexpr int NUM_SPLAT_MAPS = 4;    // RGBA splat textures (4 chan each)
+    static constexpr int ARRAY_SIZE     = 512;  // every layer resampled to this size
+
     struct BrushParams {
         enum Type { Raise = 0, Lower, Smooth, Flatten, Noise, Set, Texture, Vegetation };
         Type type = Raise;
@@ -19,11 +23,15 @@ public:
         int falloff = FalloffSmooth;
     };
 
-    // A texture layer blended onto the terrain via the splatmap. Up to 4 layers
-    // are supported (one per RGBA channel of the splat texture).
+    // A texture layer blended onto the terrain via the multi-splat map. Up to
+    // MAX_LAYERS layers are supported (4 RGBA splat textures x 4 channels).
+    // Each layer's albedo/normal is resampled to ARRAY_SIZE x ARRAY_SIZE and
+    // also kept as CPU pixels so the GPU array textures can be rebuilt cheaply.
     struct Layer {
-        GLuint albedo = 0;
-        GLuint normal = 0;
+        GLuint albedo = 0;        // 2D texture (ARRAY_SIZE^2) for ImGui preview
+        GLuint normal = 0;        // 2D texture (ARRAY_SIZE^2) for ImGui preview
+        std::vector<uint8_t> albedoPix;  // ARRAY_SIZE*ARRAY_SIZE*4 (RGBA8)
+        std::vector<uint8_t> normalPix;  // ARRAY_SIZE*ARRAY_SIZE*4 (RGBA8) or empty
         float  tileSize = 8.0f;   // world units per texture tile
         std::string name;
         std::string albedoPath;
@@ -83,14 +91,21 @@ public:
     int  layerCount() const { return (int)layers_.size(); }
     const std::vector<Layer>& layers() const { return layers_; }
     // Load (or replace) a layer's albedo/normal texture from a file. Returns
-    // true on success. Pass layerIndex in [0,3].
+    // true on success. layerIndex in [0, layerCount()).
     bool loadLayerAlbedo(int layerIndex, const std::string& path);
     bool loadLayerNormal(int layerIndex, const std::string& path);
     void setLayerTileSize(int layerIndex, float tileSize);
+    // Add a new layer from an albedo image file. Returns the new index, or -1
+    // on failure / when MAX_LAYERS is reached.
+    int  addLayer(const std::string& albedoPath);
+    // Remove a layer by index. Splats referencing it are not rewritten; the
+    // caller may want to resetSplat() afterwards.
+    void removeLayer(int layerIndex);
     void resetSplat();   // clear splat to layer 0 only
 
     // Scene serialization accessors.
     const std::vector<float>& heightsData() const { return heights_; }
+    // Planar layout: NUM_SPLAT_MAPS blocks of (gridX*gridZ*4) bytes each.
     const std::vector<uint8_t>& splatData() const { return splat_; }
     void setHeights(const std::vector<float>& h);
     void setSplat(const std::vector<uint8_t>& s);
@@ -120,10 +135,12 @@ private:
     int indexCount_ = 0;
     bool  dirty_ = false;
 
-    // Texture layers + splatmap.
-    std::vector<Layer>   layers_;     // up to 4
-    std::vector<uint8_t> splat_;      // gridX_ * gridZ_ * 4 (RGBA8 weights)
-    GLuint splatTex_ = 0;
+    // Texture layers + multi-splat map.
+    std::vector<Layer>   layers_;     // up to MAX_LAYERS
+    std::vector<uint8_t> splat_;      // gridX*gridZ*4*NUM_SPLAT_MAPS (planar per map)
+    GLuint splatTex_[NUM_SPLAT_MAPS] = {0,0,0,0};
+    GLuint albedoArray_ = 0;          // GL_TEXTURE_2D_ARRAY, layers_.size() slices
+    GLuint normalArray_ = 0;          // GL_TEXTURE_2D_ARRAY, layers_.size() slices
 
     float statsMin_ = 0.0f;
     float statsMax_ = 0.0f;
@@ -144,7 +161,12 @@ private:
     void  updateStats();
     void  uploadVertices(bool fullReupload = true);
     void  uploadSplat();
+    void  rebuildArrays();   // recreate albedoArray_/normalArray_ from layers_
+    static void resampleTo512(const uint8_t* src, int sw, int sh,
+                              std::vector<uint8_t>& out);
+    static void make2DFromPixels(const std::vector<uint8_t>& pix, GLuint& tex);
+    static void fillProceduralAlbedo(std::vector<uint8_t>& out,
+                                     const glm::vec3& baseColor, float variation);
+    static void fillFlatNormal(std::vector<uint8_t>& out);
     void  initTextureLayers();   // procedural default textures + splat
-    static GLuint makeProceduralTexture(const glm::vec3& baseColor, float variation);
-    static GLuint loadTextureFile(const std::string& path);
 };

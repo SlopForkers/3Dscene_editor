@@ -1,11 +1,13 @@
 #include "terrain.h"
 #include "shader.h"
 #include <stb_image.h>
+#include <stb_image_resize2.h>
 #include <cmath>
 #include <algorithm>
 #include <iostream>
 #include <random>
 #include <cstdio>
+#include <cstring>
 
 Terrain::Terrain(int gridX, int gridZ, float worldSize)
     : gridX_(gridX), gridZ_(gridZ), worldSize_(worldSize) {
@@ -64,7 +66,11 @@ void Terrain::destroy() {
     if (vao_) { glDeleteVertexArrays(1, &vao_); vao_ = 0; }
     if (vbo_) { glDeleteBuffers(1, &vbo_); vbo_ = 0; }
     if (ebo_) { glDeleteBuffers(1, &ebo_); ebo_ = 0; }
-    if (splatTex_) { glDeleteTextures(1, &splatTex_); splatTex_ = 0; }
+    for (int i = 0; i < NUM_SPLAT_MAPS; ++i) {
+        if (splatTex_[i]) { glDeleteTextures(1, &splatTex_[i]); splatTex_[i] = 0; }
+    }
+    if (albedoArray_) { glDeleteTextures(1, &albedoArray_); albedoArray_ = 0; }
+    if (normalArray_) { glDeleteTextures(1, &normalArray_); normalArray_ = 0; }
     for (auto& l : layers_) {
         if (l.albedo) { glDeleteTextures(1, &l.albedo); l.albedo = 0; }
         if (l.normal) { glDeleteTextures(1, &l.normal); l.normal = 0; }
@@ -116,10 +122,16 @@ bool Terrain::applyBrush(const BrushParams& bp, const glm::vec3& worldPos) {
     bool changed = false;
 
     if (bp.type == BrushParams::Texture) {
-        // Splat painting: increase the weight of the selected layer under the
-        // brush and renormalise the RGBA weights so they keep summing to ~1.
-        int layer = std::clamp(bp.textureLayer, 0, 3);
-        if (layers_.empty()) return false;
+        // Multi-splat painting: 4 RGBA textures x 4 channels = 16 layers.
+        // splat_ is planar: [map0 block][map1 block][map2 block][map3 block],
+        // each block is gridX*gridZ*4 bytes. Painting a layer modifies ALL 16
+        // channels (all 4 maps) so the global weights stay normalised: the
+        // target channel moves toward 1, every other channel decays toward 0.
+        // With strength=1 and full falloff the result is a clean single-layer
+        // splat with no residual weight on other layers.
+        int layer = std::clamp(bp.textureLayer, 0, MAX_LAYERS - 1);
+        if (layer >= (int)layers_.size()) return false;
+        const size_t texels = (size_t)gridX_ * gridZ_;
         float add = std::clamp(bp.strength, 0.0f, 1.0f);
         for (int iz = z0; iz <= z1; ++iz) {
             for (int ix = x0; ix <= x1; ++ix) {
@@ -129,14 +141,22 @@ bool Terrain::applyBrush(const BrushParams& bp, const glm::vec3& worldPos) {
                                     (wz - worldPos.z) * (wz - worldPos.z));
                 float f = falloff(d, r, bp.falloff);
                 if (f <= 0.0f) continue;
-                uint8_t* px = &splat_[idx(ix, iz) * 4];
-                float w[4] = { px[0] / 255.0f, px[1] / 255.0f,
-                               px[2] / 255.0f, px[3] / 255.0f };
-                w[layer] += f * add;
-                float s = w[0] + w[1] + w[2] + w[3];
-                if (s > 1e-4f) { for (int k = 0; k < 4; ++k) w[k] /= s; }
-                for (int k = 0; k < 4; ++k)
-                    px[k] = (uint8_t)std::clamp(w[k] * 255.0f, 0.0f, 255.0f);
+                size_t t = (size_t)idx(ix, iz);
+                float w[16];
+                for (int m = 0; m < NUM_SPLAT_MAPS; ++m) {
+                    const uint8_t* px = &splat_[(size_t)m * texels * 4 + t * 4];
+                    for (int c = 0; c < 4; ++c)
+                        w[m * 4 + c] = px[c] / 255.0f;
+                }
+                float amt = std::min(1.0f, f * add);
+                w[layer] += amt * (1.0f - w[layer]);
+                for (int k = 0; k < 16; ++k)
+                    if (k != layer) w[k] *= (1.0f - amt);
+                for (int m = 0; m < NUM_SPLAT_MAPS; ++m) {
+                    uint8_t* px = &splat_[(size_t)m * texels * 4 + t * 4];
+                    for (int c = 0; c < 4; ++c)
+                        px[c] = (uint8_t)std::clamp(w[m * 4 + c] * 255.0f, 0.0f, 255.0f);
+                }
                 changed = true;
             }
         }
@@ -423,118 +443,201 @@ bool Terrain::raycast(const glm::vec3& rayOrigin, const glm::vec3& rayDir,
 }
 
 // ---------------------------------------------------------------------------
-// Texture layers + splatmap
+// Texture layers + multi-splat map
 // ---------------------------------------------------------------------------
 
-GLuint Terrain::makeProceduralTexture(const glm::vec3& baseColor, float variation) {
-    const int W = 64, H = 64;
-    std::vector<uint8_t> data(W * H * 3);
-    std::mt19937 rng(12345);
-    std::uniform_real_distribution<float> dist(-variation, variation);
-    for (int i = 0; i < W * H; ++i) {
-        float n = dist(rng);
-        // Add a low-frequency blotch for a less uniform look.
-        int x = i % W, y = i / W;
-        float blotch = std::sin(x * 0.3f) * std::cos(y * 0.25f) * variation * 0.5f;
-        data[i * 3 + 0] = (uint8_t)std::clamp((baseColor.r + n + blotch) * 255.0f, 0.0f, 255.0f);
-        data[i * 3 + 1] = (uint8_t)std::clamp((baseColor.g + n + blotch) * 255.0f, 0.0f, 255.0f);
-        data[i * 3 + 2] = (uint8_t)std::clamp((baseColor.b + n + blotch) * 255.0f, 0.0f, 255.0f);
-    }
-    GLuint tex = 0;
-    glGenTextures(1, &tex);
-    glBindTexture(GL_TEXTURE_2D, tex);
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, W, H, 0, GL_RGB, GL_UNSIGNED_BYTE, data.data());
-    glGenerateMipmap(GL_TEXTURE_2D);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-    glBindTexture(GL_TEXTURE_2D, 0);
-    return tex;
+void Terrain::resampleTo512(const uint8_t* src, int sw, int sh,
+                            std::vector<uint8_t>& out) {
+    out.resize((size_t)ARRAY_SIZE * ARRAY_SIZE * 4);
+    stbir_resize_uint8_linear(src, sw, sh, sw * 4,
+                             out.data(), ARRAY_SIZE, ARRAY_SIZE, ARRAY_SIZE * 4,
+                             STBIR_RGBA);
 }
 
-GLuint Terrain::loadTextureFile(const std::string& path) {
-    int w = 0, h = 0, ch = 0;
-    stbi_uc* pixels = stbi_load(path.c_str(), &w, &h, &ch, 4);
-    if (!pixels) {
-        std::cerr << "Terrain: failed to load texture: " << path << "\n";
-        return 0;
-    }
-    GLuint tex = 0;
+void Terrain::make2DFromPixels(const std::vector<uint8_t>& pix, GLuint& tex) {
+    if (tex) glDeleteTextures(1, &tex);
     glGenTextures(1, &tex);
     glBindTexture(GL_TEXTURE_2D, tex);
     glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, w, h, 0, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, ARRAY_SIZE, ARRAY_SIZE, 0,
+                 GL_RGBA, GL_UNSIGNED_BYTE, pix.data());
     glGenerateMipmap(GL_TEXTURE_2D);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
     glBindTexture(GL_TEXTURE_2D, 0);
-    stbi_image_free(pixels);
-    return tex;
+}
+
+void Terrain::fillProceduralAlbedo(std::vector<uint8_t>& out,
+                                  const glm::vec3& baseColor, float variation) {
+    out.assign((size_t)ARRAY_SIZE * ARRAY_SIZE * 4, 255);
+    std::mt19937 rng(12345);
+    std::uniform_real_distribution<float> dist(-variation, variation);
+    for (int y = 0; y < ARRAY_SIZE; ++y) {
+        for (int x = 0; x < ARRAY_SIZE; ++x) {
+            float n = dist(rng);
+            float blotch = std::sin(x * 0.3f) * std::cos(y * 0.25f) * variation * 0.5f;
+            size_t i = (size_t(y) * ARRAY_SIZE + x) * 4;
+            out[i + 0] = (uint8_t)std::clamp((baseColor.r + n + blotch) * 255.0f, 0.0f, 255.0f);
+            out[i + 1] = (uint8_t)std::clamp((baseColor.g + n + blotch) * 255.0f, 0.0f, 255.0f);
+            out[i + 2] = (uint8_t)std::clamp((baseColor.b + n + blotch) * 255.0f, 0.0f, 255.0f);
+            out[i + 3] = 255;
+        }
+    }
+}
+
+void Terrain::fillFlatNormal(std::vector<uint8_t>& out) {
+    out.assign((size_t)ARRAY_SIZE * ARRAY_SIZE * 4, 255);
+    for (size_t i = 0; i < (size_t)ARRAY_SIZE * ARRAY_SIZE; ++i) {
+        out[i * 4 + 0] = 128;   // X
+        out[i * 4 + 1] = 128;   // Y
+        out[i * 4 + 2] = 255;   // Z (up)
+        out[i * 4 + 3] = 255;
+    }
+}
+
+void Terrain::rebuildArrays() {
+    // (Re)create the albedo + normal array textures, one slice per layer.
+    int n = (int)layers_.size();
+    if (n == 0) {
+        if (albedoArray_) { glDeleteTextures(1, &albedoArray_); albedoArray_ = 0; }
+        if (normalArray_) { glDeleteTextures(1, &normalArray_); normalArray_ = 0; }
+        return;
+    }
+    if (albedoArray_) glDeleteTextures(1, &albedoArray_);
+    if (normalArray_) glDeleteTextures(1, &normalArray_);
+    glGenTextures(1, &albedoArray_);
+    glGenTextures(1, &normalArray_);
+
+    glBindTexture(GL_TEXTURE_2D_ARRAY, albedoArray_);
+    glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+    glTexImage3D(GL_TEXTURE_2D_ARRAY, 0, GL_RGBA, ARRAY_SIZE, ARRAY_SIZE, n,
+                 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
+    std::vector<uint8_t> tmp((size_t)ARRAY_SIZE * ARRAY_SIZE * 4);
+    for (int i = 0; i < n; ++i) {
+        const auto& pix = layers_[i].albedoPix;
+        if (!pix.empty())
+            std::memcpy(tmp.data(), pix.data(), tmp.size());
+        else
+            std::fill(tmp.begin(), tmp.end(), 128);   // mid-grey
+        glTexSubImage3D(GL_TEXTURE_2D_ARRAY, 0, 0, 0, i,
+                        ARRAY_SIZE, ARRAY_SIZE, 1, GL_RGBA, GL_UNSIGNED_BYTE,
+                        tmp.data());
+    }
+    glGenerateMipmap(GL_TEXTURE_2D_ARRAY);
+    glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_WRAP_S, GL_REPEAT);
+    glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_WRAP_T, GL_REPEAT);
+    glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+
+    glBindTexture(GL_TEXTURE_2D_ARRAY, normalArray_);
+    glTexImage3D(GL_TEXTURE_2D_ARRAY, 0, GL_RGBA, ARRAY_SIZE, ARRAY_SIZE, n,
+                 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
+    std::vector<uint8_t> flatN;
+    fillFlatNormal(flatN);
+    for (int i = 0; i < n; ++i) {
+        const auto& pix = layers_[i].normalPix;
+        const uint8_t* src = pix.empty() ? flatN.data() : pix.data();
+        glTexSubImage3D(GL_TEXTURE_2D_ARRAY, 0, 0, 0, i,
+                        ARRAY_SIZE, ARRAY_SIZE, 1, GL_RGBA, GL_UNSIGNED_BYTE,
+                        src);
+    }
+    glGenerateMipmap(GL_TEXTURE_2D_ARRAY);
+    glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_WRAP_S, GL_REPEAT);
+    glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_WRAP_T, GL_REPEAT);
+    glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+
+    glBindTexture(GL_TEXTURE_2D_ARRAY, 0);
 }
 
 void Terrain::initTextureLayers() {
     // Four procedural layers so the terrain is paintable immediately.
     layers_.clear();
     layers_.resize(4);
-    layers_[0].name = "Grass";  layers_[0].albedo = makeProceduralTexture(glm::vec3(0.30f, 0.55f, 0.28f), 0.10f);
-    layers_[1].name = "Dirt";   layers_[1].albedo = makeProceduralTexture(glm::vec3(0.38f, 0.26f, 0.16f), 0.08f);
-    layers_[2].name = "Rock";   layers_[2].albedo = makeProceduralTexture(glm::vec3(0.45f, 0.45f, 0.48f), 0.12f);
-    layers_[3].name = "Sand";   layers_[3].albedo = makeProceduralTexture(glm::vec3(0.76f, 0.70f, 0.50f), 0.06f);
-    layers_[0].tileSize = 8.0f;
-    layers_[1].tileSize = 8.0f;
-    layers_[2].tileSize = 6.0f;
-    layers_[3].tileSize = 10.0f;
+    struct Def { const char* name; glm::vec3 col; float var; float tile; };
+    Def defs[4] = {
+        {"Grass", glm::vec3(0.30f, 0.55f, 0.28f), 0.10f, 8.0f},
+        {"Dirt",  glm::vec3(0.38f, 0.26f, 0.16f), 0.08f, 8.0f},
+        {"Rock",  glm::vec3(0.45f, 0.45f, 0.48f), 0.12f, 6.0f},
+        {"Sand",  glm::vec3(0.76f, 0.70f, 0.50f), 0.06f, 10.0f},
+    };
+    for (int i = 0; i < 4; ++i) {
+        layers_[i].name = defs[i].name;
+        layers_[i].tileSize = defs[i].tile;
+        fillProceduralAlbedo(layers_[i].albedoPix, defs[i].col, defs[i].var);
+        make2DFromPixels(layers_[i].albedoPix, layers_[i].albedo);
+    }
+    rebuildArrays();
 
-    // Splat: layer 0 (grass) everywhere by default.
-    splat_.assign((size_t)gridX_ * gridZ_ * 4, 0);
+    // Splat: layer 0 (grass) everywhere by default. Planar layout: 4 maps.
+    splat_.assign((size_t)gridX_ * gridZ_ * 4 * NUM_SPLAT_MAPS, 0);
+    size_t map0 = 0;   // map 0 offset
     for (size_t i = 0; i < (size_t)gridX_ * gridZ_; ++i)
-        splat_[i * 4 + 0] = 255;   // R = grass full weight
+        splat_[map0 + i * 4 + 0] = 255;   // R = layer 0 full weight
 
-    glGenTextures(1, &splatTex_);
-    glBindTexture(GL_TEXTURE_2D, splatTex_);
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, gridX_, gridZ_, 0, GL_RGBA, GL_UNSIGNED_BYTE, splat_.data());
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-    glBindTexture(GL_TEXTURE_2D, 0);
+    for (int m = 0; m < NUM_SPLAT_MAPS; ++m) {
+        glGenTextures(1, &splatTex_[m]);
+        glBindTexture(GL_TEXTURE_2D, splatTex_[m]);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, gridX_, gridZ_, 0,
+                     GL_RGBA, GL_UNSIGNED_BYTE,
+                     &splat_[(size_t)m * gridX_ * gridZ_ * 4]);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+        glBindTexture(GL_TEXTURE_2D, 0);
+    }
 }
 
 void Terrain::uploadSplat() {
-    if (!splatTex_) return;
-    glBindTexture(GL_TEXTURE_2D, splatTex_);
-    glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, gridX_, gridZ_, GL_RGBA, GL_UNSIGNED_BYTE, splat_.data());
-    glBindTexture(GL_TEXTURE_2D, 0);
+    for (int m = 0; m < NUM_SPLAT_MAPS; ++m) {
+        if (!splatTex_[m]) continue;
+        glBindTexture(GL_TEXTURE_2D, splatTex_[m]);
+        glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, gridX_, gridZ_, GL_RGBA,
+                        GL_UNSIGNED_BYTE, &splat_[(size_t)m * gridX_ * gridZ_ * 4]);
+        glBindTexture(GL_TEXTURE_2D, 0);
+    }
 }
 
 void Terrain::resetSplat() {
-    splat_.assign((size_t)gridX_ * gridZ_ * 4, 0);
+    splat_.assign((size_t)gridX_ * gridZ_ * 4 * NUM_SPLAT_MAPS, 0);
     for (size_t i = 0; i < (size_t)gridX_ * gridZ_; ++i)
-        splat_[i * 4 + 0] = 255;
+        splat_[i * 4 + 0] = 255;   // map 0, channel 0 = layer 0
     uploadSplat();
 }
 
 bool Terrain::loadLayerAlbedo(int layerIndex, const std::string& path) {
     if (layerIndex < 0 || layerIndex >= (int)layers_.size()) return false;
-    GLuint t = loadTextureFile(path);
-    if (!t) return false;
-    if (layers_[layerIndex].albedo) glDeleteTextures(1, &layers_[layerIndex].albedo);
-    layers_[layerIndex].albedo = t;
+    int w = 0, h = 0, ch = 0;
+    stbi_uc* pixels = stbi_load(path.c_str(), &w, &h, &ch, 4);
+    if (!pixels) {
+        std::cerr << "Terrain: failed to load texture: " << path << "\n";
+        return false;
+    }
+    resampleTo512(pixels, w, h, layers_[layerIndex].albedoPix);
+    stbi_image_free(pixels);
+    make2DFromPixels(layers_[layerIndex].albedoPix, layers_[layerIndex].albedo);
     layers_[layerIndex].albedoPath = path;
+    rebuildArrays();
     return true;
 }
 
 bool Terrain::loadLayerNormal(int layerIndex, const std::string& path) {
     if (layerIndex < 0 || layerIndex >= (int)layers_.size()) return false;
-    GLuint t = loadTextureFile(path);
-    if (!t) return false;
-    if (layers_[layerIndex].normal) glDeleteTextures(1, &layers_[layerIndex].normal);
-    layers_[layerIndex].normal = t;
+    int w = 0, h = 0, ch = 0;
+    stbi_uc* pixels = stbi_load(path.c_str(), &w, &h, &ch, 4);
+    if (!pixels) {
+        std::cerr << "Terrain: failed to load texture: " << path << "\n";
+        return false;
+    }
+    resampleTo512(pixels, w, h, layers_[layerIndex].normalPix);
+    stbi_image_free(pixels);
+    make2DFromPixels(layers_[layerIndex].normalPix, layers_[layerIndex].normal);
     layers_[layerIndex].hasNormal = true;
     layers_[layerIndex].normalPath = path;
+    rebuildArrays();
     return true;
 }
 
@@ -543,30 +646,60 @@ void Terrain::setLayerTileSize(int layerIndex, float tileSize) {
     layers_[layerIndex].tileSize = std::max(0.25f, tileSize);
 }
 
+int Terrain::addLayer(const std::string& albedoPath) {
+    if ((int)layers_.size() >= MAX_LAYERS) return -1;
+    int w = 0, h = 0, ch = 0;
+    stbi_uc* pixels = stbi_load(albedoPath.c_str(), &w, &h, &ch, 4);
+    if (!pixels) {
+        std::cerr << "Terrain: failed to load texture: " << albedoPath << "\n";
+        return -1;
+    }
+    Layer L;
+    L.name = "Layer " + std::to_string(layers_.size());
+    L.tileSize = 8.0f;
+    resampleTo512(pixels, w, h, L.albedoPix);
+    stbi_image_free(pixels);
+    make2DFromPixels(L.albedoPix, L.albedo);
+    L.albedoPath = albedoPath;
+    layers_.push_back(std::move(L));
+    rebuildArrays();
+    return (int)layers_.size() - 1;
+}
+
+void Terrain::removeLayer(int layerIndex) {
+    if (layerIndex < 0 || layerIndex >= (int)layers_.size()) return;
+    if (layers_.size() <= 1) return;   // keep at least one layer
+    if (layers_[layerIndex].albedo) glDeleteTextures(1, &layers_[layerIndex].albedo);
+    if (layers_[layerIndex].normal) glDeleteTextures(1, &layers_[layerIndex].normal);
+    layers_.erase(layers_.begin() + layerIndex);
+    rebuildArrays();
+}
+
 void Terrain::bindTextures(const Shader& shader) const {
-    if (layers_.empty() || !splatTex_) return;
-    // Splat at unit 8.
-    glActiveTexture(GL_TEXTURE8);
-    glBindTexture(GL_TEXTURE_2D, splatTex_);
-    shader.setInt("uSplat", 8);
-
-    // Layer albedo at units 9..12, normals at 13..16.
-    for (int i = 0; i < 4 && i < (int)layers_.size(); ++i) {
+    // Albedo array at unit 0, normal array at unit 1.
+    if (albedoArray_) {
+        glActiveTexture(GL_TEXTURE0);
+        glBindTexture(GL_TEXTURE_2D_ARRAY, albedoArray_);
+        shader.setInt("uAlbedo", 0);
+    }
+    if (normalArray_) {
+        glActiveTexture(GL_TEXTURE1);
+        glBindTexture(GL_TEXTURE_2D_ARRAY, normalArray_);
+        shader.setInt("uNormal", 1);
+    }
+    // Splat maps at units 2..5.
+    for (int m = 0; m < NUM_SPLAT_MAPS; ++m) {
+        glActiveTexture(GL_TEXTURE2 + m);
+        glBindTexture(GL_TEXTURE_2D, splatTex_[m]);
         char uname[32];
-        glActiveTexture(GL_TEXTURE9 + i);
-        glBindTexture(GL_TEXTURE_2D, layers_[i].albedo ? layers_[i].albedo : 0);
-        std::snprintf(uname, sizeof(uname), "uLayerTex%d", i);
-        shader.setInt(uname, 9 + i);
-
-        glActiveTexture(GL_TEXTURE13 + i);
-        glBindTexture(GL_TEXTURE_2D, layers_[i].normal ? layers_[i].normal : 0);
-        std::snprintf(uname, sizeof(uname), "uLayerNormal%d", i);
-        shader.setInt(uname, 13 + i);
-
-        std::snprintf(uname, sizeof(uname), "uTileSize%d", i);
+        std::snprintf(uname, sizeof(uname), "uSplat%d", m);
+        shader.setInt(uname, 2 + m);
+    }
+    // Per-layer tile sizes.
+    for (int i = 0; i < (int)layers_.size(); ++i) {
+        char uname[32];
+        std::snprintf(uname, sizeof(uname), "uTileSize[%d]", i);
         shader.setFloat(uname, layers_[i].tileSize);
-        std::snprintf(uname, sizeof(uname), "uHasLayerNormal%d", i);
-        shader.setBool(uname, layers_[i].hasNormal);
     }
     shader.setInt("uLayerCount", (int)layers_.size());
     shader.setFloat("uTerrainSize", worldSize_);
@@ -582,7 +715,8 @@ void Terrain::setHeights(const std::vector<float>& h) {
 }
 
 void Terrain::setSplat(const std::vector<uint8_t>& s) {
-    if ((int)s.size() != gridX_ * gridZ_ * 4) return;
+    // Expect planar layout: gridX*gridZ*4*NUM_SPLAT_MAPS bytes.
+    if ((int)s.size() != gridX_ * gridZ_ * 4 * NUM_SPLAT_MAPS) return;
     splat_ = s;
     uploadSplat();
 }

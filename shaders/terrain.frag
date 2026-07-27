@@ -10,74 +10,66 @@ uniform vec3 uCamPos;
 uniform float uMaxHeight;
 uniform float uTerrainSize;
 
-uniform sampler2D uSplat;
-uniform sampler2D uLayerTex0; uniform sampler2D uLayerTex1;
-uniform sampler2D uLayerTex2; uniform sampler2D uLayerTex3;
-uniform sampler2D uLayerNormal0; uniform sampler2D uLayerNormal1;
-uniform sampler2D uLayerNormal2; uniform sampler2D uLayerNormal3;
-uniform float uTileSize0; uniform float uTileSize1;
-uniform float uTileSize2; uniform float uTileSize3;
-uniform bool  uHasLayerNormal0; uniform bool uHasLayerNormal1;
-uniform bool  uHasLayerNormal2; uniform bool uHasLayerNormal3;
+uniform sampler2DArray uAlbedo;
+uniform sampler2DArray uNormal;
+uniform sampler2D uSplat0; uniform sampler2D uSplat1;
+uniform sampler2D uSplat2; uniform sampler2D uSplat3;
+uniform float uTileSize[16];
 uniform int   uLayerCount;
 
 out vec4 FragColor;
 
-vec3 layerAlbedo(int i, vec2 uv) {
-    if (i == 0) return texture(uLayerTex0, uv).rgb;
-    if (i == 1) return texture(uLayerTex1, uv).rgb;
-    if (i == 2) return texture(uLayerTex2, uv).rgb;
-    return texture(uLayerTex3, uv).rgb;
-}
-
-vec3 layerNormal(int i, vec2 uv) {
-    if (i == 0) return uHasLayerNormal0 ? texture(uLayerNormal0, uv).xyz * 2.0 - 1.0 : vec3(0.0, 0.0, 1.0);
-    if (i == 1) return uHasLayerNormal1 ? texture(uLayerNormal1, uv).xyz * 2.0 - 1.0 : vec3(0.0, 0.0, 1.0);
-    if (i == 2) return uHasLayerNormal2 ? texture(uLayerNormal2, uv).xyz * 2.0 - 1.0 : vec3(0.0, 0.0, 1.0);
-    return uHasLayerNormal3 ? texture(uLayerNormal3, uv).xyz * 2.0 - 1.0 : vec3(0.0, 0.0, 1.0);
-}
-
-float layerTile(int i) {
-    if (i == 0) return uTileSize0;
-    if (i == 1) return uTileSize1;
-    if (i == 2) return uTileSize2;
-    return uTileSize3;
+// Weight of layer i (0..15): which splat map (i/4) and channel (i%4).
+float layerWeight(int i, vec4 s0, vec4 s1, vec4 s2, vec4 s3) {
+    int m = i / 4;
+    int c = i % 4;
+    vec4 sm;
+    if (m == 0) sm = s0; else if (m == 1) sm = s1;
+    else if (m == 2) sm = s2; else sm = s3;
+    if (c == 0) return sm.r;
+    if (c == 1) return sm.g;
+    if (c == 2) return sm.b;
+    return sm.a;
 }
 
 void main() {
-    vec4 splat = texture(uSplat, vGridUv);
-    float w0 = splat.r, w1 = splat.g, w2 = splat.b, w3 = splat.a;
-    float wsum = max(w0 + w1 + w2 + w3, 0.0001);
-    w0 /= wsum; w1 /= wsum; w2 /= wsum; w3 /= wsum;
+    vec4 s0 = texture(uSplat0, vGridUv);
+    vec4 s1 = texture(uSplat1, vGridUv);
+    vec4 s2 = texture(uSplat2, vGridUv);
+    vec4 s3 = texture(uSplat3, vGridUv);
 
-    int n = uLayerCount;
+    int n = min(uLayerCount, 16);
+
+    // Accumulate weighted albedo + tangent-space normal.
     vec3 albedo = vec3(0.0);
-    vec3 tn = vec3(0.0);   // accumulated tangent-space normal contribution
+    vec3 tn     = vec3(0.0);
+    float wsum = 0.0;
 
-    if (n > 0) {
-        vec2 uv0 = vWorldXZ / uTileSize0;
-        albedo += w0 * layerAlbedo(0, uv0);
-        tn     += w0 * layerNormal(0, uv0);
+    for (int i = 0; i < 16; ++i) {
+        if (i >= n) break;
+        float w = layerWeight(i, s0, s1, s2, s3);
+        if (w <= 0.001) continue;
+        vec2 uv = vWorldXZ / uTileSize[i];
+        albedo += w * texture(uAlbedo, vec3(uv, float(i))).rgb;
+        tn     += w * (texture(uNormal, vec3(uv, float(i))).xyz * 2.0 - 1.0);
+        wsum   += w;
     }
-    if (n > 1) {
-        vec2 uv1 = vWorldXZ / uTileSize1;
-        albedo += w1 * layerAlbedo(1, uv1);
-        tn     += w1 * layerNormal(1, uv1);
-    }
-    if (n > 2) {
-        vec2 uv2 = vWorldXZ / uTileSize2;
-        albedo += w2 * layerAlbedo(2, uv2);
-        tn     += w2 * layerNormal(2, uv2);
-    }
-    if (n > 3) {
-        vec2 uv3 = vWorldXZ / uTileSize3;
-        albedo += w3 * layerAlbedo(3, uv3);
-        tn     += w3 * layerNormal(3, uv3);
+
+    if (wsum > 0.001) {
+        albedo /= wsum;
+        tn     /= wsum;
+    } else if (n > 0) {
+        // No splat weight anywhere: fall back to layer 0.
+        vec2 uv0 = vWorldXZ / uTileSize[0];
+        albedo = texture(uAlbedo, vec3(uv0, 0.0)).rgb;
+        tn = texture(uNormal, vec3(uv0, 0.0)).xyz * 2.0 - 1.0;
+    } else {
+        albedo = vec3(0.4, 0.4, 0.4);
+        tn = vec3(0.0, 0.0, 1.0);
     }
 
     vec3 N = normalize(vNormal);
-    // Perturb normal with the blended tangent-space normal. A simple screen-space
-    // reorientation keeps lighting consistent with the surface.
+    // Perturb normal with the blended tangent-space normal.
     vec3 Q = normalize(dFdx(vWorldPos));
     vec3 T = normalize(dFdy(vWorldPos));
     vec3 B = normalize(cross(N, T));

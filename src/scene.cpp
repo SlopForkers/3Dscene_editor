@@ -277,7 +277,7 @@ bool App::saveScene(const std::string& path) {
 
     // Build JSON metadata (everything except heights/splat binary blobs).
     json::Value root(json::Value::ObjectT);
-    root.obj["version"] = json::Value(1);
+    root.obj["version"] = json::Value(2);
 
     // Terrain metadata.
     json::Value terrain(json::Value::ObjectT);
@@ -416,7 +416,7 @@ bool App::saveScene(const std::string& path) {
     // Magic + version.
     const char magic[4] = {'S','C','N','E'};
     f.write(magic, 4);
-    uint32_t version = 1;
+    uint32_t version = 2;
     f.write(reinterpret_cast<const char*>(&version), sizeof(version));
 
     // JSON: size prefix + data.
@@ -460,7 +460,10 @@ bool App::loadScene(const std::string& path) {
     off += 4;
     uint32_t version;
     std::memcpy(&version, buf.data() + off, sizeof(version)); off += 4;
-    if (version != 1) { std::cerr << "Unsupported scene version: " << version << "\n"; return false; }
+    if (version != 1 && version != 2) {
+        std::cerr << "Unsupported scene version: " << version << "\n";
+        return false;
+    }
 
     // JSON: size prefix + data.
     uint32_t jsonSize;
@@ -498,25 +501,50 @@ bool App::loadScene(const std::string& path) {
             terrain_.setHeights(heights);
         }
 
-        // Load splat from embedded binary blob.
-        if (splatBytes == (uint32_t)(gx * gz * 4)) {
+        // Load splat from embedded binary blob. Version 2 uses planar
+        // multi-splat (4 RGBA maps = 16 channels, gx*gz*16 bytes). Version 1
+        // used a single RGBA map (gx*gz*4); migrate it into map 0 of the new
+        // 16-channel planar layout and leave maps 1-3 zero.
+        if (splatBytes == (uint32_t)(gx * gz * 16)) {
             std::vector<uint8_t> splat((size_t)splatBytes);
             std::memcpy(splat.data(), splatPtr, splatBytes);
             terrain_.setSplat(splat);
+        } else if (splatBytes == (uint32_t)(gx * gz * 4)) {
+            std::vector<uint8_t> splat16((size_t)gx * gz * 16, 0);
+            // Old interleaved-per-texel 4 bytes -> map 0 planar block.
+            size_t map0 = 0;
+            for (size_t p = 0; p < (size_t)gx * gz; ++p)
+                std::memcpy(&splat16[map0 + p * 4], splatPtr + p * 4, 4);
+            terrain_.setSplat(splat16);
         }
 
-        // Layers.
+        // Layers (library, up to MAX_LAYERS). Replace existing slot textures,
+        // append brand-new layers, then trim any leftover procedural layers
+        // beyond the saved set so the loaded layer list matches exactly.
         const json::Value& layers = t["layers"];
         if (layers.isArr()) {
-            for (size_t i = 0; i < layers.size() && i < 4; ++i) {
+            size_t savedN = layers.size();
+            for (size_t i = 0; i < savedN; ++i) {
                 const json::Value& L = layers[i];
-                terrain_.setLayerName((int)i, L["name"].asStr());
-                terrain_.setLayerTileSize((int)i, (float)L["tileSize"].asNum(8.0));
                 std::string albedo = L["albedo"].asStr();
                 std::string normal = L["normal"].asStr();
-                if (!albedo.empty()) terrain_.loadLayerAlbedo((int)i, absPath(albedo, baseDir));
-                if (!normal.empty()) terrain_.loadLayerNormal((int)i, absPath(normal, baseDir));
+                std::string nm = L["name"].asStr();
+                float ts = (float)L["tileSize"].asNum(8.0);
+                if ((int)i >= terrain_.layerCount()) {
+                    int idx = albedo.empty() ? -1 : terrain_.addLayer(absPath(albedo, baseDir));
+                    if (idx < 0) continue;
+                    if (!normal.empty()) terrain_.loadLayerNormal(idx, absPath(normal, baseDir));
+                    terrain_.setLayerName(idx, nm);
+                    terrain_.setLayerTileSize(idx, ts);
+                } else {
+                    if (!albedo.empty()) terrain_.loadLayerAlbedo((int)i, absPath(albedo, baseDir));
+                    if (!normal.empty()) terrain_.loadLayerNormal((int)i, absPath(normal, baseDir));
+                    terrain_.setLayerName((int)i, nm);
+                    terrain_.setLayerTileSize((int)i, ts);
+                }
             }
+            while (terrain_.layerCount() > (int)savedN)
+                terrain_.removeLayer(terrain_.layerCount() - 1);
         }
     }
 

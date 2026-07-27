@@ -1419,14 +1419,56 @@ void App::drawBrushContent() {
     }
     if (brush_.type == Terrain::BrushParams::Texture) {
         ImGui::Separator();
-        ImGui::Text("Texture layer:");
-        for (int i = 0; i < terrain_.layerCount(); ++i) {
-            bool sel = (brush_.textureLayer == i);
-            const std::string& ln = terrain_.layers()[i].name;
-            if (ImGui::RadioButton(ln.c_str(), sel)) brush_.textureLayer = i;
-            if ((i + 1) % 2 != 0) ImGui::SameLine();
+        ImGui::TextDisabled("Texture layers (click to paint)");
+        ImDrawList* dl = ImGui::GetWindowDrawList();
+        const float cell = 50.0f;
+        const float gap2 = 6.0f;
+        int nLay = terrain_.layerCount();
+        for (int i = 0; i < nLay; ++i) {
+            const auto& l = terrain_.layers()[i];
+            ImGui::PushID(i);
+            bool active = (brush_.textureLayer == i);
+            ImVec2 p0 = ImGui::GetCursorScreenPos();
+            ImVec2 p1(p0.x + cell, p0.y + cell);
+            ImU32 bg = ImGui::ColorConvertFloat4ToU32(
+                ImGui::GetStyle().Colors[ImGuiCol_FrameBg]);
+            dl->AddRectFilled(p0, p1, bg, 4.0f);
+            if (l.albedo) {
+                ImGui::SetCursorScreenPos(ImVec2(p0.x + 2, p0.y + 2));
+                ImGui::Image((ImTextureID)(intptr_t)l.albedo,
+                             ImVec2(cell - 4, cell - 4));
+            } else {
+                dl->AddRectFilled(ImVec2(p0.x + 4, p0.y + 4),
+                                  ImVec2(p1.x - 4, p1.y - 4),
+                                  IM_COL32(60, 60, 60, 255), 3.0f);
+            }
+            if (active)
+                dl->AddRect(p0, p1, IM_COL32(255, 230, 110, 255), 4.0f, 0, 2.5f);
+            char badge[6]; std::snprintf(badge, sizeof(badge), "%d", i);
+            dl->AddText(ImVec2(p0.x + 3, p0.y + 1),
+                        IM_COL32(255, 255, 255, 220), badge);
+            ImGui::SetCursorScreenPos(p0);
+            char lbl[16]; std::snprintf(lbl, sizeof(lbl), "##tb%d", i);
+            ImGui::InvisibleButton(lbl, ImVec2(cell, cell));
+            if (ImGui::IsItemClicked()) brush_.textureLayer = i;
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("Layer %d: %s", i, l.name.c_str());
+            ImGui::PopID();
+            if ((i + 1) % 4 != 0) ImGui::SameLine(0, gap2);
         }
-        brush_.strength = std::clamp(brush_.strength, 0.01f, 1.0f);
+        if (nLay < Terrain::MAX_LAYERS) {
+            ImGui::Button("Add texture...");
+            if (ImGui::IsItemClicked()) {
+                std::string p = openFileDialog("Image",
+                    "*.png;*.jpg;*.jpeg;*.tga;*.bmp");
+                if (!p.empty()) {
+                    int idx = terrain_.addLayer(p);
+                    if (idx >= 0) brush_.textureLayer = idx;
+                }
+            }
+        }
+        brush_.textureLayer = std::clamp(brush_.textureLayer, 0,
+                                         terrain_.layerCount() - 1);
     }
     if (brush_.type == Terrain::BrushParams::Vegetation) {
         ImGui::Separator();
@@ -1858,31 +1900,101 @@ void App::drawTerrainContent() {
 }
 
 void App::drawLayersContent() {
-    ImGui::TextDisabled("Texture layers");
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    const float cell = 52.0f;
+    const float gap2 = 6.0f;
+    int nLay = terrain_.layerCount();
+
+    ImGui::TextDisabled("Texture library (%d / %d)", nLay, Terrain::MAX_LAYERS);
     ImGui::Separator();
-    for (int i = 0; i < terrain_.layerCount(); ++i) {
+
+    // Library grid: click selects the paint layer; right-click removes.
+    bool removed = false;
+    for (int i = 0; i < nLay && !removed; ++i) {
         const auto& l = terrain_.layers()[i];
         ImGui::PushID(i);
-        ImGui::Text("%d: %s", i, l.name.c_str());
+        bool active = (brush_.textureLayer == i);
+        ImVec2 p0 = ImGui::GetCursorScreenPos();
+        ImVec2 p1(p0.x + cell, p0.y + cell);
+        ImU32 bg = ImGui::ColorConvertFloat4ToU32(
+            ImGui::GetStyle().Colors[ImGuiCol_FrameBg]);
+        dl->AddRectFilled(p0, p1, bg, 4.0f);
         if (l.albedo) {
-            ImGui::SameLine();
-            ImGui::Image((ImTextureID)(intptr_t)l.albedo, ImVec2(48, 48));
+            ImGui::SetCursorScreenPos(ImVec2(p0.x + 2, p0.y + 2));
+            ImGui::Image((ImTextureID)(intptr_t)l.albedo,
+                         ImVec2(cell - 4, cell - 4));
+        } else {
+            dl->AddRectFilled(ImVec2(p0.x + 4, p0.y + 4),
+                              ImVec2(p1.x - 4, p1.y - 4),
+                              IM_COL32(60, 60, 60, 255), 3.0f);
         }
-        if (ImGui::Button("Albedo...")) {
-            std::string p = openFileDialog("Image", "*.png;*.jpg;*.jpeg;*.tga;*.bmp");
-            if (!p.empty()) terrain_.loadLayerAlbedo(i, p);
+        if (active)
+            dl->AddRect(p0, p1, IM_COL32(255, 230, 110, 255), 4.0f, 0, 2.5f);
+        char badge[6]; std::snprintf(badge, sizeof(badge), "%d", i);
+        dl->AddText(ImVec2(p0.x + 3, p0.y + 1),
+                    IM_COL32(255, 255, 255, 220), badge);
+        ImGui::SetCursorScreenPos(p0);
+        char lbl[16]; std::snprintf(lbl, sizeof(lbl), "##ly%d", i);
+        ImGui::InvisibleButton(lbl, ImVec2(cell, cell));
+        if (ImGui::IsItemClicked()) {
+            brush_.textureLayer = i;
+            brush_.type = Terrain::BrushParams::Texture;
+            toolMode_ = ToolPaint;
+        }
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Layer %d: %s  (right-click to remove)", i, l.name.c_str());
+        if (ImGui::IsItemClicked(ImGuiMouseButton_Right) && nLay > 1) {
+            terrain_.removeLayer(i);
+            if (brush_.textureLayer >= terrain_.layerCount())
+                brush_.textureLayer = terrain_.layerCount() - 1;
+            removed = true;
+        }
+        ImGui::PopID();
+        if (!removed && (i + 1) % 4 != 0) ImGui::SameLine(0, gap2);
+    }
+
+    if (nLay < Terrain::MAX_LAYERS) {
+        if (ImGui::Button("Add texture...")) {
+            std::string p = openFileDialog("Image",
+                "*.png;*.jpg;*.jpeg;*.tga;*.bmp");
+            if (!p.empty()) {
+                int idx = terrain_.addLayer(p);
+                if (idx >= 0) brush_.textureLayer = idx;
+            }
+        }
+    }
+
+    ImGui::Separator();
+    ImGui::TextDisabled("Active layer settings");
+    int al = std::clamp(brush_.textureLayer, 0, terrain_.layerCount() - 1);
+    if (al >= 0 && al < terrain_.layerCount()) {
+        const auto& L = terrain_.layers()[al];
+        ImGui::Text("%d: %s", al, L.name.c_str());
+        if (L.albedo) {
+            ImGui::SameLine();
+            ImGui::Image((ImTextureID)(intptr_t)L.albedo, ImVec2(40, 40));
+        }
+        float ts = L.tileSize;
+        if (ImGui::SliderFloat("Tile size", &ts, 0.5f, 64.0f, "%.1f"))
+            terrain_.setLayerTileSize(al, ts);
+        if (ImGui::Button("Replace albedo...")) {
+            std::string p = openFileDialog("Image",
+                "*.png;*.jpg;*.jpeg;*.tga;*.bmp");
+            if (!p.empty()) terrain_.loadLayerAlbedo(al, p);
         }
         ImGui::SameLine();
-        if (ImGui::Button("Normal...")) {
-            std::string p = openFileDialog("Image", "*.png;*.jpg;*.jpeg;*.tga;*.bmp");
-            if (!p.empty()) terrain_.loadLayerNormal(i, p);
+        if (ImGui::Button("Load normal...")) {
+            std::string p = openFileDialog("Image",
+                "*.png;*.jpg;*.jpeg;*.tga;*.bmp");
+            if (!p.empty()) terrain_.loadLayerNormal(al, p);
         }
-        float ts = l.tileSize;
-        if (ImGui::SliderFloat("Tile size", &ts, 0.5f, 64.0f, "%.1f"))
-            terrain_.setLayerTileSize(i, ts);
-        ImGui::PopID();
-        ImGui::Separator();
+        char nm[64];
+        std::snprintf(nm, sizeof(nm), "%s", L.name.c_str());
+        if (ImGui::InputText("Name", nm, sizeof(nm)))
+            terrain_.setLayerName(al, nm);
     }
+
+    ImGui::Separator();
     if (ImGui::Button("Reset Splat")) terrain_.resetSplat();
 }
 
