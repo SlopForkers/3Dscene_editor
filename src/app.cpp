@@ -267,9 +267,24 @@ void App::handleInput(float dt) {
         camera_.pan(float(g_input.mouseDeltaX()), float(g_input.mouseDeltaY()));
     }
 
-    // Zoom (scroll) — only when not over UI
-    if (!overUI && g_input.scrollDelta() != 0.0f) {
-        camera_.zoom(-g_input.scrollDelta() * 0.1f);
+    // Scroll: modifiers change brush radius/strength, plain scroll zooms.
+    if (g_input.scrollDelta() != 0.0f) {
+        bool shift = g_input.keyDown(GLFW_KEY_LEFT_SHIFT) ||
+                     g_input.keyDown(GLFW_KEY_RIGHT_SHIFT);
+        bool ctrl  = g_input.keyDown(GLFW_KEY_LEFT_CONTROL) ||
+                     g_input.keyDown(GLFW_KEY_RIGHT_CONTROL);
+        if (shift) {
+            brush_.radius = std::clamp(
+                brush_.radius + g_input.scrollDelta() * 1.5f,
+                1.0f, terrain_.worldSize() * 0.4f);
+            brushCursor_.setShape(brush_.radius);
+        } else if (ctrl) {
+            brush_.strength = std::clamp(
+                brush_.strength + g_input.scrollDelta() * 0.05f,
+                0.01f, 5.0f);
+        } else if (!overUI) {
+            camera_.zoom(-g_input.scrollDelta() * 0.1f);
+        }
     }
 
     // Tab cycles between terrain brush, prop and vertex-edit tools.
@@ -378,6 +393,14 @@ void App::handleInput(float dt) {
     }
 }
 
+// Heat-scale color from brush strength: green (weak) -> yellow -> red (strong).
+static glm::vec3 strengthColor(float strength) {
+    float t = std::sqrt(std::clamp((strength - 0.01f) / (5.0f - 0.01f), 0.0f, 1.0f));
+    return glm::vec3(std::clamp(t * 2.0f, 0.0f, 1.0f),
+                     std::clamp(2.0f - t * 2.0f, 0.0f, 1.0f),
+                     0.0f);
+}
+
 void App::renderScene() {
     if (wireframe_) glPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
     else            glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
@@ -438,13 +461,24 @@ void App::renderScene() {
         camera_.screenToRay((float)sx, (float)sy, origin, dir);
         glm::vec3 hit;
         if (terrain_.raycast(origin, dir, hit)) {
-            glm::vec3 c(cursorColor_[0], cursorColor_[1], cursorColor_[2]);
+            glm::vec3 c = strengthColor(brush_.strength);
             lineShader_.use();
             glm::mat4 model(1.0f);
             model = glm::translate(model, hit);
             lineShader_.setMat4("uViewProj", vp * model);
             lineShader_.setVec3("uColor", c);
-            brushCursor_.draw(vp * model, hit, c, false);
+            // Filled disk with opacity proportional to strength.
+            float alpha = std::clamp(brush_.strength / 5.0f * 0.4f, 0.0f, 0.4f);
+            lineShader_.setFloat("uAlpha", alpha);
+            glEnable(GL_BLEND);
+            glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+            glDepthMask(GL_FALSE);
+            brushCursor_.draw(vp * model, hit, c, true, alpha);
+            glDepthMask(GL_TRUE);
+            glDisable(GL_BLEND);
+            // Ring outline at full opacity.
+            lineShader_.setFloat("uAlpha", 1.0f);
+            brushCursor_.draw(vp * model, hit, c, false, 0.0f);
         }
     }
 
@@ -1057,7 +1091,7 @@ void App::drawHelpOverlay() {
     ImGui::BulletText("Tab: cycle Brush / Prop / Vertex tool");
     ImGui::BulletText("Right-drag: orbit camera");
     ImGui::BulletText("Middle-drag: pan camera");
-    ImGui::BulletText("Scroll: zoom");
+    ImGui::BulletText("Scroll: zoom (Shift+scroll: brush size, Ctrl+scroll: strength)");
     if (toolMode_ == ToolPaint) {
         ImGui::Separator();
         ImGui::TextUnformatted("Brush tool:");
