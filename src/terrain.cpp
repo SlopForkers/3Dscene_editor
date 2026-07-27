@@ -298,6 +298,34 @@ void Terrain::draw() const {
     glBindVertexArray(0);
 }
 
+glm::vec3 Terrain::vertexPos(int ix, int iz) const {
+    return vertices_[idx(clampIX(ix), clampIZ(iz))].position;
+}
+glm::vec3 Terrain::vertexNormal(int ix, int iz) const {
+    return vertices_[idx(clampIX(ix), clampIZ(iz))].normal;
+}
+float Terrain::getHeight(int ix, int iz) const {
+    return getH(ix, iz);
+}
+void Terrain::setHeightRaw(int ix, int iz, float h) {
+    setH(ix, iz, h);
+    int i = idx(clampIX(ix), clampIZ(iz));
+    vertices_[i].position.y = h;
+}
+void Terrain::refresh(int x0, int z0, int x1, int z1) {
+    // Expand by 1 so normals at the boundary see the changed heights.
+    recomputeNormals(std::max(0, x0 - 1), std::max(0, z0 - 1),
+                     std::min(gridX_ - 1, x1 + 1), std::min(gridZ_ - 1, z1 + 1));
+    updateStats();
+    uploadVertices(false);
+}
+void Terrain::snapWorldToVertex(const glm::vec3& world, int& outIx, int& outIz) const {
+    float fx = (world.x / worldSize_ + 0.5f) * (gridX_ - 1);
+    float fz = (world.z / worldSize_ + 0.5f) * (gridZ_ - 1);
+    outIx = clampIX(int(std::round(fx)));
+    outIz = clampIZ(int(std::round(fz)));
+}
+
 void Terrain::flatten(float height) {
     std::fill(heights_.begin(), heights_.end(), height);
     recomputeAllNormals();

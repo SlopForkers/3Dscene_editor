@@ -8,6 +8,7 @@
 #include "prop.h"
 #include "gizmo.h"
 #include "skybox.h"
+#include "vertex_edit.h"
 #include <memory>
 #include <string>
 #include <vector>
@@ -36,8 +37,8 @@ private:
     void drawHelpOverlay();
     void drawSelectionBox();
 
-    // Tool modes: 0 = terrain brush, 1 = prop select/place
-    enum ToolMode { ToolPaint = 0, ToolProp = 1 };
+    // Tool modes: 0 = terrain brush, 1 = prop select/place, 2 = vertex edit
+    enum ToolMode { ToolPaint = 0, ToolProp = 1, ToolVertex = 2 };
     int toolMode_ = ToolPaint;
 
     // Import a glTF/VRM file and spawn a prop at the terrain centre.
@@ -72,6 +73,9 @@ private:
 
     // Prop interaction
     Gizmo gizmo_;
+
+    // Vertex editing
+    VertexEditor vertexEditor_;
 
     // Display options
     bool wireframe_ = false;

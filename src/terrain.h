@@ -59,6 +59,24 @@ public:
     float minHeight() const { return statsMin_; }
     float maxHeight() const { return statsMax_; }
 
+    // ---- Vertex editing API ----
+    // World-space position of grid vertex (ix, iz).
+    glm::vec3 vertexPos(int ix, int iz) const;
+    // Normal at grid vertex (ix, iz).
+    glm::vec3 vertexNormal(int ix, int iz) const;
+    // Get/set raw height. setHeightRaw only updates the height value and the
+    // vertex position; callers must call refresh() afterwards to recompute
+    // normals and upload the VBO.
+    float getHeight(int ix, int iz) const;
+    void setHeightRaw(int ix, int iz, float h);
+    // Recompute normals over [x0,z0]..[x1,z1] (clamped) and upload the VBO.
+    void refresh(int x0, int z0, int x1, int z1);
+    // Snap a world-space point to the nearest grid vertex coordinates.
+    void snapWorldToVertex(const glm::vec3& world, int& outIx, int& outIz) const;
+    // World-space X/Z for grid coords (public for gizmo math).
+    float worldXAt(int ix) const { return (float(ix) / float(gridX_ - 1) - 0.5f) * worldSize_; }
+    float worldZAt(int iz) const { return (float(iz) / float(gridZ_ - 1) - 0.5f) * worldSize_; }
+
     // Texture layers.
     int  layerCount() const { return (int)layers_.size(); }
     const std::vector<Layer>& layers() const { return layers_; }

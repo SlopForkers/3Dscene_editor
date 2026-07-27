@@ -107,6 +107,7 @@ bool App::initOpenGL() {
     brushCursor_.setShape(brush_.radius);
     gizmo_.create();
     skybox_.create();
+    vertexEditor_.create();
 
     // Unit-cube wireframe (24 vertices, 12 edges) for prop selection boxes.
     {
@@ -152,6 +153,7 @@ void App::shutdown() {
         gizmo_.destroy();
         terrain_.destroy();
         skybox_.destroy();
+        vertexEditor_.destroy();
         if (boxVao_) { glDeleteVertexArrays(1, &boxVao_); boxVao_ = 0; }
         if (boxVbo_) { glDeleteBuffers(1, &boxVbo_); boxVbo_ = 0; }
         props_.clear();
@@ -270,10 +272,12 @@ void App::handleInput(float dt) {
         camera_.zoom(-g_input.scrollDelta() * 0.1f);
     }
 
-    // Tab toggles between terrain brush and prop tools.
+    // Tab cycles between terrain brush, prop and vertex-edit tools.
     if (g_input.keyPressed(GLFW_KEY_TAB)) {
-        toolMode_ = (toolMode_ == ToolPaint) ? ToolProp : ToolPaint;
+        toolMode_ = (toolMode_ == ToolPaint) ? ToolProp :
+                    (toolMode_ == ToolProp)  ? ToolVertex : ToolPaint;
         painting_ = false;
+        if (toolMode_ == ToolVertex) wireframe_ = true;
     }
 
     // Left-button behaviour depends on the active tool.
@@ -303,7 +307,7 @@ void App::handleInput(float dt) {
                 hasPaintPoint_ = true;
             }
         }
-    } else {
+    } else if (toolMode_ == ToolProp) {
         // Prop tool.
         Prop* sel = props_.selected();
 
@@ -336,6 +340,15 @@ void App::handleInput(float dt) {
                 props_.select(-1);
             }
         }
+    } else if (toolMode_ == ToolVertex) {
+        // Vertex editing — only active in wireframe.
+        if (wireframe_) {
+            vertexEditor_.handleInput(camera_, terrain_, brush_.radius,
+                                      brush_.falloff, io, overUI);
+        } else if (g_input.mousePressed(Input::Left) && !overUI) {
+            // Re-enable wireframe on click so the user can resume editing.
+            wireframe_ = true;
+        }
     }
 
     // Keyboard shortcuts for brush types
@@ -352,6 +365,12 @@ void App::handleInput(float dt) {
         if (g_input.keyPressed(GLFW_KEY_T)) gizmo_.setMode(Gizmo::Translate);
         if (g_input.keyPressed(GLFW_KEY_R)) gizmo_.setMode(Gizmo::Rotate);
         if (g_input.keyPressed(GLFW_KEY_S)) gizmo_.setMode(Gizmo::Scale);
+    }
+    // Vertex-edit drag-mode shortcuts.
+    if (toolMode_ == ToolVertex) {
+        if (g_input.keyPressed(GLFW_KEY_V)) vertexEditor_.setDragMode(VertexEditor::FreeXYZ);
+        if (g_input.keyPressed(GLFW_KEY_B)) vertexEditor_.setDragMode(VertexEditor::Vertical);
+        if (g_input.keyPressed(GLFW_KEY_N)) vertexEditor_.setDragMode(VertexEditor::Normal);
     }
 }
 
@@ -398,6 +417,13 @@ void App::renderScene() {
             gizmo_.draw(camera_, sel->position, lineShader_);
             glEnable(GL_DEPTH_TEST);
         }
+    }
+
+    // Vertex editor selection markers + gizmo (vertex tool only).
+    if (toolMode_ == ToolVertex && wireframe_ && vertexEditor_.hasSelection()) {
+        glDisable(GL_DEPTH_TEST);
+        vertexEditor_.draw(camera_, terrain_, lineShader_);
+        glEnable(GL_DEPTH_TEST);
     }
 
     // Brush cursor — only relevant in paint mode.
@@ -540,6 +566,26 @@ void App::drawMainPanel() {
             ImGui::EndTabItem();
         }
 
+        // ---- Vertex tab ----
+        if (ImGui::BeginTabItem("Vertex")) {
+            ImGui::TextDisabled("Press Tab to enter vertex-edit mode (wireframe).");
+            const char* modes[] = { "Free XYZ", "Vertical (Y)", "Normal" };
+            int dm = (int)vertexEditor_.dragMode();
+            if (ImGui::Combo("Drag mode", &dm, modes, 3))
+                vertexEditor_.setDragMode((VertexEditor::DragMode)dm);
+            ImGui::Text("Shortcuts: V=Free, B=Vertical, N=Normal");
+            ImGui::Separator();
+            ImGui::Text("Selection: %d vertex%s",
+                        vertexEditor_.selectionCount(),
+                        vertexEditor_.selectionCount() == 1 ? "" : "es");
+            if (ImGui::Button("Clear selection")) vertexEditor_.clearSelection();
+            ImGui::Separator();
+            ImGui::TextWrapped("Click a vertex to select. Ctrl+click adds to the "
+                               "selection. Drag the gizmo to pull vertices; the "
+                               "brush radius/falloff controls falloff.");
+            ImGui::EndTabItem();
+        }
+
         // ---- Props tab ----
         if (ImGui::BeginTabItem("Props")) {
             if (ImGui::Button("Import glTF / VRM...")) {
@@ -674,7 +720,7 @@ void App::drawHelpOverlay() {
                  ImGuiWindowFlags_NoResize | ImGuiWindowFlags_AlwaysAutoResize |
                  ImGuiWindowFlags_NoCollapse);
     ImGui::TextUnformatted("Controls:");
-    ImGui::BulletText("Tab: toggle Brush / Prop tool");
+    ImGui::BulletText("Tab: cycle Brush / Prop / Vertex tool");
     ImGui::BulletText("Right-drag: orbit camera");
     ImGui::BulletText("Middle-drag: pan camera");
     ImGui::BulletText("Scroll: zoom");
@@ -683,13 +729,20 @@ void App::drawHelpOverlay() {
         ImGui::TextUnformatted("Brush tool:");
         ImGui::BulletText("Left-drag: paint terrain");
         ImGui::BulletText("1..5: brush type");
-    } else {
+    } else if (toolMode_ == ToolProp) {
         ImGui::Separator();
         ImGui::TextUnformatted("Prop tool:");
         ImGui::BulletText("Left-click prop: select");
         ImGui::BulletText("Left-click empty: deselect");
         ImGui::BulletText("Drag gizmo axes to transform");
         ImGui::BulletText("T/R/S: gizmo mode");
+    } else {
+        ImGui::Separator();
+        ImGui::TextUnformatted("Vertex tool (wireframe):");
+        ImGui::BulletText("Left-click vertex: select");
+        ImGui::BulletText("Ctrl+click: add to selection");
+        ImGui::BulletText("Drag gizmo to pull vertices");
+        ImGui::BulletText("V/B/N: drag mode (Free/Y/Normal)");
     }
     ImGui::Separator();
     ImGui::BulletText("F: wireframe   H: help");
@@ -699,10 +752,15 @@ void App::drawHelpOverlay() {
         ImGui::Text("Brush: %s (%s)  R=%.1f  S=%.2f",
                     brushTypeName(brush_.type), falloffName(brush_.falloff),
                     brush_.radius, brush_.strength);
-    } else {
+    } else if (toolMode_ == ToolProp) {
         ImGui::Text("Props: %d   Selected: %s",
                     props_.count(),
                     props_.selectedId() >= 0 ? std::to_string(props_.selectedId()).c_str() : "none");
+    } else {
+        const char* dm = vertexEditor_.dragMode() == VertexEditor::FreeXYZ  ? "Free XYZ" :
+                         vertexEditor_.dragMode() == VertexEditor::Vertical ? "Vertical" : "Normal";
+        ImGui::Text("Vertices: %d   Drag: %s",
+                    vertexEditor_.selectionCount(), dm);
     }
     ImGui::End();
 }
