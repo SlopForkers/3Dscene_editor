@@ -7,6 +7,7 @@
 #include "shader.h"
 #include "prop.h"
 #include "gizmo.h"
+#include "skybox.h"
 #include <memory>
 #include <string>
 #include <vector>
@@ -54,6 +55,10 @@ private:
     Shader terrainShader_;
     Shader lineShader_;
     Shader propShader_;
+    Shader skyboxShader_;
+    Shader skyboxConvertShader_;
+    Skybox skybox_;
+    float skyExposure_ = 1.0f;
 
     // Brush state
     Terrain::BrushParams brush_;

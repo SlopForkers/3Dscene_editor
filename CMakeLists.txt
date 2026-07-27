@@ -136,6 +136,8 @@ set(SOURCES
     src/gizmo.h
     src/file_dialog.cpp
     src/file_dialog.h
+    src/skybox.cpp
+    src/skybox.h
 )
 
 add_executable(scene_editor ${SOURCES})

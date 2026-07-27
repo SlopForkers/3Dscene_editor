@@ -2,6 +2,7 @@
 #include "input.h"
 #include "model.h"
 #include "file_dialog.h"
+#include "skybox.h"
 #include <imgui.h>
 #include <backends/imgui_impl_glfw.h>
 #include <backends/imgui_impl_opengl3.h>
@@ -12,6 +13,7 @@
 #include <filesystem>
 #include <algorithm>
 #include <cstdio>
+#include <cctype>
 
 static glm::vec3 lightDirFromAngles(float azimuth, float elevation) {
     float ce = std::cos(elevation);
@@ -83,7 +85,15 @@ bool App::initOpenGL() {
         return false;
     }
     if (!propShader_.loadFromFile(shaderDir_ + "/prop.vert",
-                                   shaderDir_ + "/prop.frag")) {
+                                    shaderDir_ + "/prop.frag")) {
+        return false;
+    }
+    if (!skyboxShader_.loadFromFile(shaderDir_ + "/skybox.vert",
+                                     shaderDir_ + "/skybox.frag")) {
+        return false;
+    }
+    if (!skyboxConvertShader_.loadFromFile(shaderDir_ + "/skybox_convert.vert",
+                                            shaderDir_ + "/skybox_convert.frag")) {
         return false;
     }
 
@@ -96,6 +106,7 @@ bool App::initOpenGL() {
     brushCursor_.create();
     brushCursor_.setShape(brush_.radius);
     gizmo_.create();
+    skybox_.create();
 
     // Unit-cube wireframe (24 vertices, 12 edges) for prop selection boxes.
     {
@@ -140,6 +151,7 @@ void App::shutdown() {
         brushCursor_.destroy();
         gizmo_.destroy();
         terrain_.destroy();
+        skybox_.destroy();
         if (boxVao_) { glDeleteVertexArrays(1, &boxVao_); boxVao_ = 0; }
         if (boxVbo_) { glDeleteBuffers(1, &boxVbo_); boxVbo_ = 0; }
         props_.clear();
@@ -156,8 +168,21 @@ int App::run(const std::vector<std::string>& importArgs) {
     if (!initOpenGL()) { shutdown(); return 1; }
     initImGui();
 
-    // Import any models passed on the command line (useful for testing).
-    for (const auto& p : importArgs) importModel(p);
+    // Import any models / sky passed on the command line (useful for testing).
+    for (const auto& p : importArgs) {
+        std::string ext;
+        auto dot = p.find_last_of('.');
+        if (dot != std::string::npos) ext = p.substr(dot);
+        // Lowercase compare
+        std::string extl; extl.reserve(ext.size());
+        for (char c : ext) extl.push_back((char)std::tolower((unsigned char)c));
+        if (extl == ".hdr" || extl == ".png" || extl == ".jpg" ||
+            extl == ".jpeg" || extl == ".tga" || extl == ".bmp") {
+            skybox_.loadEquirect(skyboxConvertShader_, p);
+        } else {
+            importModel(p);
+        }
+    }
 
     lastTime_ = glfwGetTime();
     while (!glfwWindowShouldClose(window_)) {
@@ -337,6 +362,13 @@ void App::renderScene() {
     glm::mat4 view = camera_.view();
     glm::mat4 proj = camera_.projection();
     glm::mat4 vp = proj * view;
+
+    // Skybox first: strip translation from the view so the cube stays centred
+    // on the camera; the vertex shader pins depth at the far plane.
+    glm::mat4 skyVp = proj * glm::mat4(glm::mat3(view));
+    glDepthFunc(GL_LEQUAL);
+    skybox_.draw(skyboxShader_, skyVp, skyExposure_);
+    glDepthFunc(GL_LESS);
 
     terrainShader_.use();
     terrainShader_.setMat4("uViewProj", vp);
@@ -598,6 +630,22 @@ void App::drawMainPanel() {
             ImGui::Separator();
             ImGui::SliderFloat("Light azimuth",   &lightAzimuth_,   0.0f, 6.28f);
             ImGui::SliderFloat("Light elevation", &lightElevation_, 0.1f, 1.55f);
+            ImGui::Separator();
+            ImGui::Text("Skybox");
+            ImGui::SliderFloat("Sky exposure", &skyExposure_, 0.0f, 3.0f, "%.2f");
+            if (ImGui::Button("Import sky...")) {
+                std::string p = openFileDialog("Sky image",
+                    "*.hdr;*.png;*.jpg;*.jpeg;*.tga;*.bmp");
+                if (!p.empty()) skybox_.loadEquirect(skyboxConvertShader_, p);
+            }
+            ImGui::SameLine();
+            if (ImGui::Button("Reset to default")) skybox_.resetToDefault();
+            if (skybox_.isDefault()) {
+                ImGui::TextDisabled("Procedural gradient sky");
+            } else {
+                ImGui::TextDisabled("Imported: %s",
+                    std::filesystem::path(skybox_.importedPath()).filename().string().c_str());
+            }
             ImGui::EndTabItem();
         }
 
