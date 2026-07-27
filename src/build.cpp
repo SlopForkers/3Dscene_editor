@@ -180,6 +180,71 @@ bool BuildSystem::computePlacement(const Terrain& terrain,
     return false;
 }
 
+bool BuildSystem::cellOccupied(float x, float z) const {
+    float tol = gridStep_ * 0.3f;
+    for (const auto& b : blocks_) {
+        if (std::abs(b.position.x - x) < tol &&
+            std::abs(b.position.z - z) < tol)
+            return true;
+    }
+    return false;
+}
+
+int BuildSystem::fillRect(const Terrain& terrain,
+                            float x0, float z0, float x1, float z1,
+                            BlockType type) {
+    if (x1 < x0) std::swap(x0, x1);
+    if (z1 < z0) std::swap(z0, z1);
+    int placed = 0;
+    glm::vec3 size(blockW_, blockH_, blockW_);
+    float joinR = gridStep_ * 1.5f;
+    float joinR2 = joinR * joinR;
+    float seedY = 1e30f;
+
+    for (float cx = snapToGrid(x0); cx <= x1 + 1e-4f; cx += gridStep_) {
+        for (float cz = snapToGrid(z0); cz <= z1 + 1e-4f; cz += gridStep_) {
+            if (cellOccupied(cx, cz)) continue;
+
+            float centerY;
+            if (seedY < 1e29f) {
+                centerY = seedY;
+            } else {
+                float ny = 1e30f;
+                for (const auto& b : blocks_) {
+                    if (b.type != Foundation) continue;
+                    float bx = b.position.x - cx;
+                    float bz = b.position.z - cz;
+                    if (bx * bx + bz * bz < joinR2) { ny = b.position.y; break; }
+                }
+                if (ny < 1e29f) {
+                    centerY = ny;
+                } else {
+                    float th = terrain.heightAtWorld(cx, cz);
+                    float topY = th + blockH_ * (1.0f - sunkDepth_);
+                    centerY = topY - blockH_ * 0.5f;
+                }
+            }
+            placeBlock(glm::vec3(cx, centerY, cz), size, type, color_);
+            ++placed;
+            if (seedY > 1e29f) seedY = centerY;
+        }
+    }
+    return placed;
+}
+
+int BuildSystem::eraseRect(float x0, float z0, float x1, float z1) {
+    if (x1 < x0) std::swap(x0, x1);
+    if (z1 < z0) std::swap(z0, z1);
+    float tol = gridStep_ * 0.5f;
+    int before = (int)blocks_.size();
+    blocks_.erase(std::remove_if(blocks_.begin(), blocks_.end(),
+        [&](const Block& b) {
+            return b.position.x >= x0 - tol && b.position.x <= x1 + tol &&
+                   b.position.z >= z0 - tol && b.position.z <= z1 + tol;
+        }), blocks_.end());
+    return before - (int)blocks_.size();
+}
+
 int BuildSystem::placeBlock(const glm::vec3& center, const glm::vec3& size,
                              BlockType type, const glm::vec3& color) {
     Block b;

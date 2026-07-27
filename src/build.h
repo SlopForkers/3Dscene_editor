@@ -67,6 +67,22 @@ public:
     const std::vector<Block>& blocks() const { return blocks_; }
     const Block* findBlock(int id) const;
 
+    // Area placement: fill grid cells within `radius` (XZ disc) around
+    // `worldPos` with foundation blocks, joining any adjacent foundation at the
+    // same Y level. Skips cells already occupied. Returns the number placed.
+    int  paintArea(const Terrain& terrain, const glm::vec3& worldPos,
+                   float radius, BlockType type);
+    // Fill a grid-aligned rectangle (world-space corners x0..x1, z0..z1) with
+    // blocks. Joins any adjacent foundation at the same Y level. Returns count.
+    int  fillRect(const Terrain& terrain,
+                  float x0, float z0, float x1, float z1, BlockType type);
+    // Erase all blocks within `radius` (XZ) of `worldPos`.
+    int  eraseArea(const glm::vec3& worldPos, float radius);
+    // Erase all blocks within a grid-aligned rectangle.
+    int  eraseRect(float x0, float z0, float x1, float z1);
+    // True if a block already occupies grid cell (x,z).
+    bool cellOccupied(float x, float z) const;
+
     // Render all placed blocks (opaque) using the lit block shader.
     void render(const Shader& shader, const glm::mat4& viewProj,
                 const glm::vec3& lightDir, const glm::vec3& camPos) const;

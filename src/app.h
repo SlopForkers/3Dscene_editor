@@ -146,6 +146,9 @@ private:
     glm::vec3 ghostCenter_ = glm::vec3(0.0f);
     glm::vec3 ghostSize_   = glm::vec3(2.0f);
     BuildSystem::BlockType ghostType_ = BuildSystem::Foundation;
+    // Drag-rectangle area fill: start cell recorded on press, fill on release.
+    bool  buildDragging_ = false;
+    glm::vec2 buildDragStart_ = glm::vec2(0.0f); // (x, z) world grid coords
 
     // Selection box wireframe VAO/VBO (unit cube, reused per frame).
     GLuint boxVao_ = 0, boxVbo_ = 0;

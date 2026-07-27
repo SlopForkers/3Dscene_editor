@@ -407,37 +407,72 @@ void App::handleInput(float dt) {
             wireframe_ = true;
         }
     } else if (toolMode_ == ToolBuild) {
-        // Build tool: compute ghost placement from the cursor ray each frame
-        // so the user sees where the next block will go.
         double sx = g_input.mouseX() * (double)fbWidth_  / (double)winWidth_;
         double sy = g_input.mouseY() * (double)fbHeight_ / (double)winHeight_;
         glm::vec3 origin, dir;
         camera_.screenToRay((float)sx, (float)sy, origin, dir);
-        glm::vec3 gc, gs;
-        BuildSystem::BlockType gt;
-        hasGhost_ = !overUI && build_.computePlacement(terrain_, origin, dir,
-                                                        gc, gs, gt);
-        if (hasGhost_) { ghostCenter_ = gc; ghostSize_ = gs; ghostType_ = gt; }
 
-        if (!overUI && g_input.mousePressed(Input::Left)) {
-            bool ctrl = g_input.keyDown(GLFW_KEY_LEFT_CONTROL) ||
-                        g_input.keyDown(GLFW_KEY_RIGHT_CONTROL);
-            if (ctrl) {
-                // Ctrl+click: delete the block under the cursor.
-                glm::vec3 hp, hn;
-                int id = build_.pick(origin, dir, hp, hn);
-                if (id >= 0) {
+        bool ctrl = g_input.keyDown(GLFW_KEY_LEFT_CONTROL) ||
+                    g_input.keyDown(GLFW_KEY_RIGHT_CONTROL);
+
+        // Press: pick block face (single-block snap) OR start rect on terrain.
+        if (g_input.mousePressed(Input::Left) && !overUI) {
+            glm::vec3 hp, hn;
+            int id = build_.pick(origin, dir, hp, hn);
+            if (id >= 0) {
+                if (ctrl) {
                     build_.removeBlock(id);
                     if (selectedBlockId_ == id) selectedBlockId_ = -1;
+                } else {
+                    glm::vec3 gc, gs;
+                    BuildSystem::BlockType gt;
+                    if (build_.computePlacement(terrain_, origin, dir, gc, gs, gt)) {
+                        int nid = build_.placeBlock(gc, gs, gt, build_.color());
+                        selectedBlockId_ = nid;
+                    }
                 }
-            } else if (hasGhost_) {
-                // Place a block at the ghost position.
-                int id = build_.placeBlock(ghostCenter_, ghostSize_,
-                                            ghostType_, build_.color());
-                selectedBlockId_ = id;
+            } else {
+                // Start rectangle drag on the terrain.
+                glm::vec3 tHit;
+                if (terrain_.raycast(origin, dir, tHit)) {
+                    buildDragging_ = true;
+                    float gx = std::round(tHit.x / build_.gridStep()) * build_.gridStep();
+                    float gz = std::round(tHit.z / build_.gridStep()) * build_.gridStep();
+                    buildDragStart_ = glm::vec2(gx, gz);
+                }
             }
         }
-        // Delete key removes the selected block.
+        if (g_input.mouseReleased(Input::Left)) {
+            if (buildDragging_ && !overUI) {
+                glm::vec3 tHit;
+                if (terrain_.raycast(origin, dir, tHit)) {
+                    float gx = std::round(tHit.x / build_.gridStep()) * build_.gridStep();
+                    float gz = std::round(tHit.z / build_.gridStep()) * build_.gridStep();
+                    if (ctrl) {
+                        int n = build_.eraseRect(buildDragStart_.x, buildDragStart_.y,
+                                                 gx, gz);
+                        if (n > 0) selectedBlockId_ = -1;
+                    } else {
+                        build_.fillRect(terrain_,
+                                        buildDragStart_.x, buildDragStart_.y,
+                                        gx, gz, BuildSystem::Foundation);
+                    }
+                }
+            }
+            buildDragging_ = false;
+        }
+
+        // Ghost preview for single-block placement (only when not dragging).
+        if (!buildDragging_) {
+            glm::vec3 gc, gs;
+            BuildSystem::BlockType gt;
+            hasGhost_ = !overUI && build_.computePlacement(terrain_, origin, dir,
+                                                            gc, gs, gt);
+            if (hasGhost_) { ghostCenter_ = gc; ghostSize_ = gs; ghostType_ = gt; }
+        } else {
+            hasGhost_ = false;
+        }
+
         if (g_input.keyPressed(GLFW_KEY_DELETE) && selectedBlockId_ >= 0) {
             build_.removeBlock(selectedBlockId_);
             selectedBlockId_ = -1;
@@ -528,6 +563,58 @@ void App::renderScene() {
         build_.renderWireframeBox(lineShader_, vp, ghostCenter_, ghostSize_,
                                   glm::vec3(1.0f, 0.95f, 0.3f));
         glEnable(GL_DEPTH_TEST);
+    }
+    // Drag-rectangle preview (build tool only, while dragging on terrain).
+    if (toolMode_ == ToolBuild && buildDragging_) {
+        double sx = g_input.mouseX() * (double)fbWidth_  / (double)winWidth_;
+        double sy = g_input.mouseY() * (double)fbHeight_ / (double)winHeight_;
+        glm::vec3 ro, rd;
+        camera_.screenToRay((float)sx, (float)sy, ro, rd);
+        glm::vec3 tHit;
+        if (terrain_.raycast(ro, rd, tHit)) {
+            float gs = build_.gridStep();
+            float gx = std::round(tHit.x / gs) * gs;
+            float gz = std::round(tHit.z / gs) * gs;
+            float x0 = std::min(buildDragStart_.x, gx) - gs * 0.5f;
+            float x1 = std::max(buildDragStart_.x, gx) + gs * 0.5f;
+            float z0 = std::min(buildDragStart_.y, gz) - gs * 0.5f;
+            float z1 = std::max(buildDragStart_.y, gz) + gs * 0.5f;
+            // Build a 5-vertex loop on the terrain surface at the rectangle
+            // border and draw it with the line shader.
+            auto yAt = [&](float x, float z) {
+                return terrain_.heightAtWorld(x, z) + 0.5f;
+            };
+            float pts[5][3] = {
+                {x0, yAt(x0, z0), z0},
+                {x1, yAt(x1, z0), z0},
+                {x1, yAt(x1, z1), z1},
+                {x0, yAt(x0, z1), z1},
+                {x0, yAt(x0, z0), z0},
+            };
+            GLuint tmpVao = 0, tmpVbo = 0;
+            glGenVertexArrays(1, &tmpVao);
+            glGenBuffers(1, &tmpVbo);
+            glBindVertexArray(tmpVao);
+            glBindBuffer(GL_ARRAY_BUFFER, tmpVbo);
+            glBufferData(GL_ARRAY_BUFFER, sizeof(pts), pts, GL_DYNAMIC_DRAW);
+            glEnableVertexAttribArray(0);
+            glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 3 * sizeof(float), (void*)0);
+            lineShader_.use();
+            lineShader_.setMat4("uViewProj", vp);
+            lineShader_.setMat4("uModel", glm::mat4(1.0f));
+            glm::vec3 rectCol = g_input.keyDown(GLFW_KEY_LEFT_CONTROL) ||
+                                 g_input.keyDown(GLFW_KEY_RIGHT_CONTROL)
+                                 ? glm::vec3(1.0f, 0.3f, 0.2f)
+                                 : glm::vec3(1.0f, 0.95f, 0.3f);
+            lineShader_.setVec3("uColor", rectCol);
+            lineShader_.setFloat("uAlpha", 1.0f);
+            glDisable(GL_DEPTH_TEST);
+            glDrawArrays(GL_LINE_STRIP, 0, 5);
+            glEnable(GL_DEPTH_TEST);
+            glBindVertexArray(0);
+            glDeleteBuffers(1, &tmpVbo);
+            glDeleteVertexArrays(1, &tmpVao);
+        }
     }
     // Selected block wireframe highlight (build tool only).
     if (toolMode_ == ToolBuild && selectedBlockId_ >= 0) {
@@ -1349,10 +1436,11 @@ void App::drawBuildContent() {
     }
 
     ImGui::Separator();
-    ImGui::TextWrapped("Click terrain: place foundation block (sunk into ground). "
-                       "Click a block's SIDE face: extend the foundation (same level). "
+    ImGui::TextWrapped("Click terrain + drag: stretch a rectangle to fill with "
+                       "foundation blocks (same level as neighbours). "
+                       "Click a block's SIDE face: extend the foundation. "
                        "Click a block's TOP face: place a wall on top. "
-                       "Ctrl+click: delete block. Del: remove selected.");
+                       "Ctrl+drag: erase blocks in the rectangle. Del: remove selected.");
 }
 
 void App::drawTerrainContent() {
@@ -1504,9 +1592,10 @@ void App::drawHelpOverlay() {
     } else if (toolMode_ == ToolBuild) {
         ImGui::Separator();
         ImGui::TextUnformatted("Build tool:");
-        ImGui::BulletText("Click terrain: place foundation");
-        ImGui::BulletText("Click block face: snap new block");
-        ImGui::BulletText("Ctrl+click: delete block");
+        ImGui::BulletText("Click+drag terrain: rectangle fill");
+        ImGui::BulletText("Click block side: extend foundation");
+        ImGui::BulletText("Click block top: place wall");
+        ImGui::BulletText("Ctrl+drag: erase rectangle");
         ImGui::BulletText("Del: remove selected block");
     } else {
         ImGui::Separator();
