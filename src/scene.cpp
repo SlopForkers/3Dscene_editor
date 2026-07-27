@@ -375,6 +375,16 @@ bool App::saveScene(const std::string& path) {
     root.obj["details"] = details;
 
     // Blocks (build system).
+    // First the shared block-texture library (paths only; textures reload on
+    // load).
+    json::Value btArr(json::Value::ArrayT);
+    for (int i = 0; i < build_.blockTextureCount(); ++i) {
+        json::Value entry(json::Value::ObjectT);
+        entry.obj["path"] = json::Value(build_.blockTexturePath(i));
+        btArr.arr.push_back(entry);
+    }
+    root.obj["blockTextures"] = btArr;
+
     json::Value blocksArr(json::Value::ArrayT);
     for (const auto& b : build_.blocks()) {
         json::Value bk(json::Value::ObjectT);
@@ -389,6 +399,10 @@ bool App::saveScene(const std::string& path) {
         bk.obj["g"]  = json::Value(b.color.g);
         bk.obj["b"]  = json::Value(b.color.b);
         bk.obj["yaw"] = json::Value(b.yaw);
+        bk.obj["ti"] = json::Value(b.textureIdx);
+        bk.obj["tf"] = json::Value(b.textureFace);
+        bk.obj["ts"] = json::Value(b.texScale);
+        bk.obj["tm"] = json::Value(b.texMode);
         blocksArr.arr.push_back(bk);
     }
     root.obj["blocks"] = blocksArr;
@@ -538,6 +552,17 @@ bool App::loadScene(const std::string& path) {
     details_.clearPrototypes();
     build_.clear();
     selectedBlockId_ = -1;
+    selectedBlockFace_ = -1;
+
+    // --- Block texture library (reload paths before blocks reference them) ---
+    const json::Value& btLib = root["blockTextures"];
+    if (btLib.isArr()) {
+        for (size_t i = 0; i < btLib.size(); ++i) {
+            const json::Value& e = btLib[i];
+            std::string p = absPath(e["path"].asStr(), baseDir);
+            if (!p.empty()) build_.loadBlockTexture(p);
+        }
+    }
 
     // --- Props ---
     const json::Value& props = root["props"];
@@ -616,7 +641,17 @@ bool App::loadScene(const std::string& path) {
             glm::vec3 color((float)bk["r"].asNum(0.55f), (float)bk["g"].asNum(0.45f), (float)bk["b"].asNum(0.35f));
             BuildSystem::BlockType type = (BuildSystem::BlockType)(int)bk["type"].asNum(BuildSystem::Wall);
             float yaw = (float)bk["yaw"].asNum(0.0);
-            build_.placeBlock(center, size, type, color, yaw);
+            int id = build_.placeBlock(center, size, type, color, yaw);
+            // Restore per-block face texture (indices match the loaded library).
+            int ti = (int)bk["ti"].asNum(-1.0);
+            int tf = (int)bk["tf"].asNum(-1.0);
+            float ts = (float)bk["ts"].asNum(1.0);
+            int tm = (int)bk["tm"].asNum(0.0);
+            if (ti >= 0 && tf >= 0 && id >= 0) {
+                build_.setBlockFaceTexture(id, ti, tf);
+                build_.setBlockTexScale(id, ts);
+                build_.setBlockTexMode(id, tm);
+            }
         }
     }
 

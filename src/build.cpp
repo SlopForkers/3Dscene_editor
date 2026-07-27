@@ -1,10 +1,12 @@
 #include "build.h"
 #include "shader.h"
 #include "terrain.h"
+#include <stb_image.h>
 #include <glm/gtc/matrix_transform.hpp>
 #include <algorithm>
 #include <cmath>
 #include <cstring>
+#include <iostream>
 
 BuildSystem::~BuildSystem() { destroy(); }
 
@@ -89,9 +91,24 @@ void BuildSystem::initWireCube() {
     glBindVertexArray(0);
 }
 
+void BuildSystem::initDefaultTex() {
+    // 1x1 opaque white so the sampler is always bound.
+    unsigned char px[4] = { 255, 255, 255, 255 };
+    glGenTextures(1, &defaultTex_);
+    glBindTexture(GL_TEXTURE_2D, defaultTex_);
+    glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, 1, 1, 0, GL_RGBA, GL_UNSIGNED_BYTE, px);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
+    glBindTexture(GL_TEXTURE_2D, 0);
+}
+
 void BuildSystem::create() {
     initCubeMesh();
     initWireCube();
+    initDefaultTex();
 }
 
 void BuildSystem::destroy() {
@@ -100,6 +117,10 @@ void BuildSystem::destroy() {
     if (ibo_)     { glDeleteBuffers(1, &ibo_);          ibo_ = 0; }
     if (wireVao_) { glDeleteVertexArrays(1, &wireVao_); wireVao_ = 0; }
     if (wireVbo_) { glDeleteBuffers(1, &wireVbo_);      wireVbo_ = 0; }
+    if (defaultTex_) { glDeleteTextures(1, &defaultTex_); defaultTex_ = 0; }
+    for (const auto& t : blockTextures_)
+        if (t.glId) glDeleteTextures(1, &t.glId);
+    blockTextures_.clear();
     blocks_.clear();
 }
 
@@ -355,6 +376,173 @@ const BuildSystem::Block* BuildSystem::findBlock(int id) const {
     return nullptr;
 }
 
+BuildSystem::Block* BuildSystem::findBlockMutable(int id) {
+    for (auto& b : blocks_)
+        if (b.id == id) return &b;
+    return nullptr;
+}
+
+int BuildSystem::faceFromNormal(const glm::vec3& n) {
+    float ax = std::abs(n.x), ay = std::abs(n.y), az = std::abs(n.z);
+    if (ax >= ay && ax >= az) return n.x > 0.0f ? FacePX : FaceNX;
+    if (ay >= ax && ay >= az) return n.y > 0.0f ? FacePY : FaceNY;
+    return n.z > 0.0f ? FacePZ : FaceNZ;
+}
+
+// --- Texture library ---
+
+int BuildSystem::findBlockTextureByPath(const std::string& path) const {
+    for (size_t i = 0; i < blockTextures_.size(); ++i)
+        if (blockTextures_[i].path == path) return (int)i;
+    return -1;
+}
+
+int BuildSystem::loadBlockTexture(const std::string& path) {
+    int existing = findBlockTextureByPath(path);
+    if (existing >= 0) return existing;
+    int w = 0, h = 0, ch = 0;
+    stbi_uc* pixels = stbi_load(path.c_str(), &w, &h, &ch, 4);
+    if (!pixels) {
+        std::cerr << "BuildSystem: failed to load texture: " << path << "\n";
+        return -1;
+    }
+    GLuint tex = 0;
+    glGenTextures(1, &tex);
+    glBindTexture(GL_TEXTURE_2D, tex);
+    glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, w, h, 0, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
+    glGenerateMipmap(GL_TEXTURE_2D);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glBindTexture(GL_TEXTURE_2D, 0);
+    stbi_image_free(pixels);
+
+    BlockTexture bt;
+    bt.glId = tex;
+    bt.path = path;
+    // Derive a short display name from the filename.
+    size_t slash = path.find_last_of("/\\");
+    bt.name = (slash == std::string::npos) ? path : path.substr(slash + 1);
+    blockTextures_.push_back(bt);
+    return (int)blockTextures_.size() - 1;
+}
+
+GLuint BuildSystem::blockTextureId(int i) const {
+    if (i < 0 || i >= (int)blockTextures_.size()) return defaultTex_;
+    return blockTextures_[i].glId ? blockTextures_[i].glId : defaultTex_;
+}
+
+const std::string& BuildSystem::blockTextureName(int i) const {
+    static const std::string empty;
+    if (i < 0 || i >= (int)blockTextures_.size()) return empty;
+    return blockTextures_[i].name;
+}
+
+const std::string& BuildSystem::blockTexturePath(int i) const {
+    static const std::string empty;
+    if (i < 0 || i >= (int)blockTextures_.size()) return empty;
+    return blockTextures_[i].path;
+}
+
+void BuildSystem::setBlockFaceTexture(int blockId, int textureIdx, int face) {
+    Block* b = findBlockMutable(blockId);
+    if (!b) return;
+    b->textureIdx = textureIdx;
+    b->textureFace = face;
+}
+
+void BuildSystem::clearBlockFaceTexture(int blockId) {
+    Block* b = findBlockMutable(blockId);
+    if (!b) return;
+    b->textureIdx = -1;
+    b->textureFace = -1;
+}
+
+void BuildSystem::setBlockTexScale(int blockId, float scale) {
+    Block* b = findBlockMutable(blockId);
+    if (!b) return;
+    b->texScale = std::max(0.01f, scale);
+}
+
+void BuildSystem::setBlockTexMode(int blockId, int mode) {
+    Block* b = findBlockMutable(blockId);
+    if (!b) return;
+    b->texMode = (mode == 1) ? 1 : 0;
+}
+
+void BuildSystem::paintCurrentTexture(int blockId, int face) {
+    if (currentTextureIdx_ < 0) return;
+    Block* b = findBlockMutable(blockId);
+    if (!b) return;
+    // Apply default scale/mode only if the block had no texture before this paint.
+    bool wasUntextured = (b->textureIdx < 0);
+    b->textureIdx = currentTextureIdx_;
+    b->textureFace = face;
+    if (wasUntextured) {
+        b->texScale = defaultTexScale_;
+        b->texMode  = defaultTexMode_;
+    }
+}
+
+int BuildSystem::applyTextureToRect(float x0, float z0, float x1, float z1, int face) {
+    if (currentTextureIdx_ < 0) return 0;
+    if (x1 < x0) std::swap(x0, x1);
+    if (z1 < z0) std::swap(z0, z1);
+    int n = 0;
+    for (auto& b : blocks_) {
+        if (b.position.x < x0 || b.position.x > x1 ||
+            b.position.z < z0 || b.position.z > z1) continue;
+        bool wasUntextured = (b.textureIdx < 0);
+        b.textureIdx  = currentTextureIdx_;
+        b.textureFace = face;
+        if (wasUntextured) {
+            b.texScale = defaultTexScale_;
+            b.texMode  = defaultTexMode_;
+        }
+        ++n;
+    }
+    return n;
+}
+
+int BuildSystem::applyTextureToLine(float startC, float endC, float fixedC,
+                                     bool alongX, int face) {
+    if (currentTextureIdx_ < 0) return 0;
+    if (endC < startC) std::swap(startC, endC);
+    float tol = gridStep_ * 0.5f;
+    int n = 0;
+    for (auto& b : blocks_) {
+        float c  = alongX ? b.position.x : b.position.z;
+        float fc = alongX ? b.position.z : b.position.x;
+        if (c < startC - tol || c > endC + tol) continue;
+        if (std::abs(fc - fixedC) > tol) continue;
+        bool wasUntextured = (b.textureIdx < 0);
+        b.textureIdx  = currentTextureIdx_;
+        b.textureFace = face;
+        if (wasUntextured) {
+            b.texScale = defaultTexScale_;
+            b.texMode  = defaultTexMode_;
+        }
+        ++n;
+    }
+    return n;
+}
+
+void BuildSystem::removeBlockTexture(int idx) {
+    if (idx < 0 || idx >= (int)blockTextures_.size()) return;
+    if (blockTextures_[idx].glId) glDeleteTextures(1, &blockTextures_[idx].glId);
+    blockTextures_.erase(blockTextures_.begin() + idx);
+    // Re-index block references: blocks pointing to the removed entry lose
+    // their texture; blocks past it shift down by one.
+    for (auto& b : blocks_) {
+        if (b.textureIdx == idx) { b.textureIdx = -1; b.textureFace = -1; }
+        else if (b.textureIdx > idx) --b.textureIdx;
+    }
+    if (currentTextureIdx_ == idx) currentTextureIdx_ = -1;
+    else if (currentTextureIdx_ > idx) --currentTextureIdx_;
+}
+
 // Slab-method ray/AABB test. Returns t (distance along ray) or -1; fills the
 // hit face normal (one of the axis-aligned unit normals).
 static float rayAabb(const glm::vec3& ro, const glm::vec3& rd,
@@ -413,7 +601,9 @@ int BuildSystem::pick(const glm::vec3& rayOrigin, const glm::vec3& rayDir,
 void BuildSystem::drawCube(const Shader& shader, const glm::mat4& viewProj,
                             const glm::vec3& lightDir, const glm::vec3& camPos,
                             const glm::vec3& center, const glm::vec3& size,
-                            const glm::vec3& color, float alpha, float yaw) const {
+                            const glm::vec3& color, float alpha, float yaw,
+                            int textureIdx, int textureFace, float texScale,
+                            int texMode) const {
     glm::mat4 m(1.0f);
     m = glm::translate(m, center);
     if (std::abs(yaw) > 1e-4f) m = glm::rotate(m, yaw, glm::vec3(0, 1, 0));
@@ -424,6 +614,16 @@ void BuildSystem::drawCube(const Shader& shader, const glm::mat4& viewProj,
     shader.setVec3("uLightDir", lightDir);
     shader.setVec3("uCamPos", camPos);
     shader.setFloat("uAlpha", alpha);
+    bool hasTex = (textureIdx >= 0 && textureFace >= 0 &&
+                   textureIdx < (int)blockTextures_.size());
+    shader.setInt("uHasTexture", hasTex ? 1 : 0);
+    shader.setInt("uTextureFace", hasTex ? textureFace : -1);
+    shader.setInt("uTexMode", hasTex ? texMode : 0);
+    shader.setFloat("uTexScale", texScale);
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_2D, hasTex ? blockTextures_[textureIdx].glId
+                                        : defaultTex_);
+    shader.setInt("uTex", 0);
     glBindVertexArray(vao_);
     glDrawElements(GL_TRIANGLES, indexCount_, GL_UNSIGNED_INT, 0);
     glBindVertexArray(0);
@@ -436,7 +636,8 @@ void BuildSystem::render(const Shader& shader, const glm::mat4& viewProj,
     shader.use();
     for (const auto& b : blocks_) {
         drawCube(shader, viewProj, lightDir, camPos,
-                 b.position, b.size, b.color, 1.0f, b.yaw);
+                 b.position, b.size, b.color, 1.0f, b.yaw,
+                 b.textureIdx, b.textureFace, b.texScale, b.texMode);
     }
 }
 
@@ -449,7 +650,8 @@ void BuildSystem::renderGhost(const Shader& shader, const glm::mat4& viewProj,
     glEnable(GL_BLEND);
     glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
     glDepthMask(GL_FALSE);
-    drawCube(shader, viewProj, lightDir, camPos, center, size, color, 0.35f, yaw);
+    drawCube(shader, viewProj, lightDir, camPos, center, size, color, 0.35f, yaw,
+             -1, -1, 1.0f, 0);
     glDepthMask(GL_TRUE);
     glDisable(GL_BLEND);
 

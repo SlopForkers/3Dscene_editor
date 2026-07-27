@@ -1,6 +1,7 @@
 #pragma once
 #include <glad/gl.h>
 #include <glm/glm.hpp>
+#include <string>
 #include <vector>
 
 class Shader;
@@ -11,7 +12,9 @@ class Terrain;
 class BuildSystem {
 public:
     enum BlockType { Foundation = 0, Wall = 1 };
-    enum Mode { ModeFoundation = 0, ModeWall = 1 };
+    enum Mode { ModeFoundation = 0, ModeWall = 1, ModeTexture = 2 };
+    // Cube face indices (match the mesh face order + the shader's face test).
+    enum Face { FacePX = 0, FaceNX = 1, FacePY = 2, FaceNY = 3, FacePZ = 4, FaceNZ = 5 };
 
     struct Block {
         glm::vec3 position = glm::vec3(0.0f);   // centre
@@ -20,6 +23,12 @@ public:
         BlockType type     = Wall;
         float     yaw      = 0.0f;              // rotation around Y (radians)
         int id             = 0;
+        // Optional per-face texture: index into blockTextures_ (-1 = none) and
+        // which cube face it paints onto (-1 = none).
+        int textureIdx    = -1;
+        int textureFace    = -1;
+        float texScale     = 1.0f;              // UV tiling multiplier (Tile mode)
+        int   texMode      = 0;                // 0 = Stretch, 1 = Tile
 
         // Axis-aligned footprint. For yaw near 90°/270° the X and Z swap.
         glm::vec3 aabbSize() const {
@@ -31,6 +40,12 @@ public:
         glm::vec3 max() const { return position + aabbSize() * 0.5f; }
         glm::vec3 top() const { return position + glm::vec3(0, size.y * 0.5f, 0); }
         glm::vec3 bottom() const { return position - glm::vec3(0, size.y * 0.5f, 0); }
+    };
+
+    struct BlockTexture {
+        GLuint      glId = 0;
+        std::string path;
+        std::string name;
     };
 
     BuildSystem() = default;
@@ -90,6 +105,46 @@ public:
     int  count() const { return (int)blocks_.size(); }
     const std::vector<Block>& blocks() const { return blocks_; }
     const Block* findBlock(int id) const;
+    Block* findBlockMutable(int id);
+
+    // --- Block face texture library ---
+    // Load an image file into the shared texture library. Returns its index
+    // (or -1 on failure). Reuses an existing entry if the path already loaded.
+    int  loadBlockTexture(const std::string& path);
+    int  blockTextureCount() const { return (int)blockTextures_.size(); }
+    GLuint blockTextureId(int i) const;
+    const std::string& blockTextureName(int i) const;
+    const std::string& blockTexturePath(int i) const;
+    int  findBlockTextureByPath(const std::string& path) const;
+    void removeBlockTexture(int idx);
+    // Map a hit face normal to a Face enum index.
+    static int faceFromNormal(const glm::vec3& n);
+
+    // Currently active texture for the texture-paint mode (-1 = none).
+    int  currentTexture() const { return currentTextureIdx_; }
+    void setCurrentTexture(int idx) { currentTextureIdx_ = idx; }
+    // Default UV scale applied when painting a texture onto a fresh block.
+    float defaultTexScale() const { return defaultTexScale_; }
+    void  setDefaultTexScale(float s) { defaultTexScale_ = std::max(0.01f, s); }
+    // Default texture mode: 0 = Stretch (one copy fills the face),
+    // 1 = Tile (repeat uTexScale times across the face).
+    int   defaultTexMode() const { return defaultTexMode_; }
+    void  setDefaultTexMode(int m) { defaultTexMode_ = (m == 1) ? 1 : 0; }
+
+    // Per-block face texture assignment.
+    void setBlockFaceTexture(int blockId, int textureIdx, int face);
+    void clearBlockFaceTexture(int blockId);
+    void setBlockTexScale(int blockId, float scale);
+    void setBlockTexMode(int blockId, int mode);
+    // Paint the currently-selected texture onto a block's face. Convenience
+    // wrapper around setBlockFaceTexture using currentTexture().
+    void paintCurrentTexture(int blockId, int face);
+    // Apply the active texture to every block's `face` inside an XZ rectangle
+    // (foundation-style drag) or along a 1-D line (wall-style drag). Returns
+    // the number of blocks textured.
+    int  applyTextureToRect(float x0, float z0, float x1, float z1, int face);
+    int  applyTextureToLine(float startC, float endC, float fixedC,
+                            bool alongX, int face);
 
     // Area placement: fill grid cells within `radius` (XZ disc) around
     // `worldPos` with foundation blocks, joining any adjacent foundation at the
@@ -157,18 +212,29 @@ private:
     Mode  mode_ = ModeFoundation;
     float wallThickness_ = 0.4f;
     int   wallEdge_ = 0;  // 0=+X, 1=+Z, 2=-X, 3=-Z
+    // Texture-paint mode: which library texture is active.
+    int   currentTextureIdx_ = -1;
+    float defaultTexScale_ = 1.0f;
+    int   defaultTexMode_ = 0;   // 0 = Stretch, 1 = Tile
 
     // Shared cube mesh (positions + normals, indexed).
     GLuint vao_ = 0, vbo_ = 0, ibo_ = 0;
     int    indexCount_ = 0;
     // Edge-only cube for wireframe / outlines.
     GLuint wireVao_ = 0, wireVbo_ = 0;
+    // 1x1 white fallback so the sampler is always bound.
+    GLuint defaultTex_ = 0;
+    // Shared texture library referenced by Block::textureIdx.
+    std::vector<BlockTexture> blockTextures_;
 
     void  initCubeMesh();
     void  initWireCube();
+    void  initDefaultTex();
     void  drawCube(const Shader& shader, const glm::mat4& viewProj,
                    const glm::vec3& lightDir, const glm::vec3& camPos,
                    const glm::vec3& center, const glm::vec3& size,
-                   const glm::vec3& color, float alpha, float yaw) const;
+                   const glm::vec3& color, float alpha, float yaw,
+                   int textureIdx, int textureFace, float texScale,
+                   int texMode) const;
     float snapToGrid(float v) const;
 };

@@ -141,6 +141,7 @@ private:
     // Block building system.
     BuildSystem build_;
     int  selectedBlockId_ = -1;
+    int  selectedBlockFace_ = -1;  // face picked by right-click (0..5), -1 = none
     // Ghost placement computed each frame from the cursor ray (Build tool).
     bool  hasGhost_ = false;
     glm::vec3 ghostCenter_ = glm::vec3(0.0f);
@@ -153,6 +154,17 @@ private:
     float buildDragBaseY_ = 0.0f;      // top Y of the supporting layer
     float buildDragFixed_ = 0.0f;     // fixed coordinate for wall line (edge pos)
     bool  buildDragAlongX_ = false;    // wall runs along X (true) or Z (false)
+    // Texture drag (stretch selection): the face normal picked at press time,
+    // applied to all blocks in the drag rectangle / line on release.
+    int   buildTexFace_ = -1;
+    bool  buildTexLine_ = false;        // true = line drag, false = rect drag
+    // Press-time record: which block+face was under the cursor, and the mouse
+    // pixel position. Used to tell a click (paint one block) from a drag
+    // (paint a region) on release.
+    int   buildTexPressBlock_ = -1;
+    int   buildTexPressFace_ = -1;
+    double buildTexPressMX_ = 0.0;
+    double buildTexPressMY_ = 0.0;
 
     // Selection box wireframe VAO/VBO (unit cube, reused per frame).
     GLuint boxVao_ = 0, boxVbo_ = 0;

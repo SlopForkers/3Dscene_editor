@@ -201,6 +201,7 @@ int App::run(const std::vector<std::string>& importArgs) {
             details_.clearPrototypes();
             build_.clear();
             selectedBlockId_ = -1;
+            selectedBlockFace_ = -1;
             loadScene(out);
         } else {
             importModel(p);
@@ -417,6 +418,11 @@ void App::handleInput(float dt) {
         float gs = build_.gridStep();
         BuildSystem::Mode bmode = build_.mode();
 
+        // Hotkeys: Z = foundation, X = wall, C = texture.
+        if (g_input.keyPressed(GLFW_KEY_Z)) build_.setMode(BuildSystem::ModeFoundation);
+        if (g_input.keyPressed(GLFW_KEY_X)) build_.setMode(BuildSystem::ModeWall);
+        if (g_input.keyPressed(GLFW_KEY_C)) build_.setMode(BuildSystem::ModeTexture);
+
         // R cycles the wall edge rotation (+X -> +Z -> -X -> -Z).
         if (bmode == BuildSystem::ModeWall && g_input.keyPressed(GLFW_KEY_R))
             build_.rotateWallEdge();
@@ -430,7 +436,12 @@ void App::handleInput(float dt) {
                 if (id >= 0) {
                     const BuildSystem::Block* b = build_.findBlock(id);
                     if (b) {
-                        if (bmode == BuildSystem::ModeWall && hn.y > 0.5f) {
+                        if (bmode == BuildSystem::ModeTexture) {
+                            // Texture mode: highlight the hovered block + face.
+                            selectedBlockId_ = id;
+                            selectedBlockFace_ = BuildSystem::faceFromNormal(hn);
+                            // No placement ghost — we paint on click instead.
+                        } else if (bmode == BuildSystem::ModeWall && hn.y > 0.5f) {
                             // Wall ghost: position on the block edge selected by
                             // the current wall rotation (R cycles 0..3).
                             float fixed; bool alongX;
@@ -483,10 +494,50 @@ void App::handleInput(float dt) {
             if (id >= 0) {
                 const BuildSystem::Block* b = build_.findBlock(id);
                 if (ctrl) {
-                    build_.removeBlock(id);
-                    if (selectedBlockId_ == id) selectedBlockId_ = -1;
+                    if (bmode == BuildSystem::ModeTexture) {
+                        // Ctrl+click in texture mode: clear face texture.
+                        build_.clearBlockFaceTexture(id);
+                        if (selectedBlockId_ == id) selectedBlockFace_ = -1;
+                    } else {
+                        build_.removeBlock(id);
+                        if (selectedBlockId_ == id) { selectedBlockId_ = -1; selectedBlockFace_ = -1; }
+                    }
                 } else if (b) {
-                    if (bmode == BuildSystem::ModeWall && hn.y > 0.5f) {
+                    if (bmode == BuildSystem::ModeTexture) {
+                        // Record the press; paint happens on release so a click
+                        // paints exactly one block and a drag paints a region.
+                        int face = BuildSystem::faceFromNormal(hn);
+                        bool horizontal = (face == BuildSystem::FacePY ||
+                                          face == BuildSystem::FaceNY);
+                        buildTexFace_ = face;
+                        buildTexLine_ = !horizontal;
+                        buildTexPressBlock_ = id;
+                        buildTexPressFace_ = face;
+                        buildTexPressMX_ = g_input.mouseX();
+                        buildTexPressMY_ = g_input.mouseY();
+                        buildDragging_ = true;
+                        buildDragOnBlocks_ = !horizontal;  // line uses wall-style preview
+                        if (horizontal) {
+                            buildDragStart_ = glm::vec2(std::round(hp.x / gs) * gs,
+                                                        std::round(hp.z / gs) * gs);
+                        } else {
+                            buildDragAlongX_ = (face == BuildSystem::FacePZ ||
+                                                face == BuildSystem::FaceNZ);
+                            float fixed = buildDragAlongX_
+                                ? std::round(b->position.z / gs) * gs
+                                : std::round(b->position.x / gs) * gs;
+                            buildDragFixed_ = fixed;
+                            buildDragBaseY_ = b->max().y;
+                            float startC = buildDragAlongX_
+                                ? std::round(hp.x / gs) * gs
+                                : std::round(hp.z / gs) * gs;
+                            buildDragStart_ = buildDragAlongX_
+                                ? glm::vec2(startC, fixed)
+                                : glm::vec2(fixed, startC);
+                        }
+                        selectedBlockId_ = id;
+                        selectedBlockFace_ = face;
+                    } else if (bmode == BuildSystem::ModeWall && hn.y > 0.5f) {
                         // Start wall LINE drag on block top. The wall sits on
                         // the edge selected by the current wall rotation (R).
                         float fixed; bool alongX;
@@ -526,10 +577,35 @@ void App::handleInput(float dt) {
                 if (terrain_.raycast(origin, dir, tHit)) {
                     float gx = std::round(tHit.x / gs) * gs;
                     float gz = std::round(tHit.z / gs) * gs;
-                    if (ctrl) {
+                    if (bmode == BuildSystem::ModeTexture) {
+                        // Distinguish click from drag by pixel movement so a
+                        // click paints exactly one block (the press-time pick)
+                        // and only a real drag stretches across a region.
+                        float pdx = (float)(g_input.mouseX() - buildTexPressMX_);
+                        float pdy = (float)(g_input.mouseY() - buildTexPressMY_);
+                        bool moved = (pdx * pdx + pdy * pdy) > 25.0f; // ~5px
+                        if (!moved) {
+                            // Click: paint the single block captured at press.
+                            if (buildTexPressBlock_ >= 0 && buildTexPressFace_ >= 0)
+                                build_.paintCurrentTexture(buildTexPressBlock_,
+                                                           buildTexPressFace_);
+                        } else if (buildTexLine_) {
+                            float startC = buildDragAlongX_ ? buildDragStart_.x
+                                                             : buildDragStart_.y;
+                            float curC   = buildDragAlongX_ ? gx : gz;
+                            build_.applyTextureToLine(startC, curC,
+                                                      buildDragFixed_,
+                                                      buildDragAlongX_,
+                                                      buildTexFace_);
+                        } else {
+                            build_.applyTextureToRect(buildDragStart_.x,
+                                                      buildDragStart_.y, gx, gz,
+                                                      buildTexFace_);
+                        }
+                    } else if (ctrl) {
                         int n = build_.eraseRect(buildDragStart_.x, buildDragStart_.y,
                                                  gx, gz);
-                        if (n > 0) selectedBlockId_ = -1;
+                        if (n > 0) { selectedBlockId_ = -1; selectedBlockFace_ = -1; }
                     } else if (buildDragOnBlocks_) {
                         // Wall line: project cursor onto the chosen axis.
                         float startC = buildDragAlongX_ ? buildDragStart_.x
@@ -546,11 +622,27 @@ void App::handleInput(float dt) {
             }
             buildDragging_ = false;
             buildDragOnBlocks_ = false;
+            buildTexFace_ = -1;
         }
 
         if (g_input.keyPressed(GLFW_KEY_DELETE) && selectedBlockId_ >= 0) {
             build_.removeBlock(selectedBlockId_);
             selectedBlockId_ = -1;
+            selectedBlockFace_ = -1;
+        }
+
+        // Right-click: select a block and remember the picked face (used by the
+        // face-texture UI).
+        if (g_input.mousePressed(Input::Right) && !overUI) {
+            glm::vec3 hp, hn;
+            int id = build_.pick(origin, dir, hp, hn);
+            if (id >= 0) {
+                selectedBlockId_ = id;
+                selectedBlockFace_ = BuildSystem::faceFromNormal(hn);
+            } else {
+                selectedBlockId_ = -1;
+                selectedBlockFace_ = -1;
+            }
         }
     }
 
@@ -656,6 +748,7 @@ void App::renderScene() {
                          g_input.keyDown(GLFW_KEY_RIGHT_CONTROL);
             glm::vec3 rectCol;
             if (ctrl) rectCol = glm::vec3(1.0f, 0.3f, 0.2f);
+            else if (build_.mode() == BuildSystem::ModeTexture) rectCol = glm::vec3(0.8f, 0.4f, 1.0f);
             else if (buildDragOnBlocks_) rectCol = glm::vec3(0.3f, 0.8f, 1.0f);
             else rectCol = glm::vec3(1.0f, 0.95f, 0.3f);
 
@@ -1492,11 +1585,12 @@ void App::drawBuildContent() {
     ImGui::TextDisabled("Build");
     ImGui::Separator();
 
-    // Mode slots: Foundation / Wall.
+    // Mode slots: Foundation / Wall / Texture (Z / X / C).
     ImDrawList* dl = ImGui::GetWindowDrawList();
     const float slotSz = 60.0f, gap = 6.0f;
-    const char* modeNames[] = { "Foundation", "Wall" };
-    for (int i = 0; i < 2; ++i) {
+    const char* modeNames[] = { "Foundation", "Wall", "Texture" };
+    const char* modeKeys[]  = { "Z", "X", "C" };
+    for (int i = 0; i < 3; ++i) {
         ImVec2 p0 = ImGui::GetCursorScreenPos();
         ImVec2 p1 = ImVec2(p0.x + slotSz, p0.y + slotSz);
         bool active = ((int)build_.mode() == i);
@@ -1511,34 +1605,107 @@ void App::drawBuildContent() {
             float m = slotSz * 0.22f;
             dl->AddRectFilled(ImVec2(p0.x + m, p0.y + m),
                                ImVec2(p1.x - m, p1.y - m), col, 2.0f);
-        } else {
+        } else if (i == 1) {
             // Wall icon: thin horizontal bar.
             float mx = slotSz * 0.18f;
             float my = slotSz * 0.40f;
             float mh = slotSz * 0.16f;
             dl->AddRectFilled(ImVec2(p0.x + mx, p0.y + my),
                               ImVec2(p1.x - mx, p0.y + my + mh), col, 2.0f);
+        } else {
+            // Texture icon: checker pattern.
+            float m = slotSz * 0.22f;
+            float s = (slotSz - 2 * m) * 0.5f;
+            for (int cy = 0; cy < 2; ++cy)
+                for (int cx = 0; cx < 2; ++cx)
+                    if ((cx + cy) % 2 == 0)
+                        dl->AddRectFilled(ImVec2(p0.x + m + cx * s, p0.y + m + cy * s),
+                                          ImVec2(p0.x + m + (cx + 1) * s, p0.y + m + (cy + 1) * s), col);
         }
         ImGui::SetCursorScreenPos(p0);
         char lbl[16]; std::snprintf(lbl, sizeof(lbl), "##bmode%d", i);
         ImGui::InvisibleButton(lbl, ImVec2(slotSz, slotSz));
-        if (hover) ImGui::SetTooltip("%s", modeNames[i]);
+        if (hover) ImGui::SetTooltip("%s [%s]", modeNames[i], modeKeys[i]);
         if (ImGui::IsItemClicked()) build_.setMode((BuildSystem::Mode)i);
         ImGui::SameLine(0, gap);
     }
     ImGui::NewLine();
-    ImGui::Text("Mode: %s", modeNames[(int)build_.mode()]);
+    ImGui::Text("Mode: %s  [%s]", modeNames[(int)build_.mode()],
+                modeKeys[(int)build_.mode()]);
     ImGui::Separator();
 
-    float w = build_.blockWidth(), h = build_.blockHeight();
-    if (ImGui::SliderFloat("Block width",  &w, 0.5f, 16.0f, "%.2f")) build_.setBlockSize(w, h);
-    if (ImGui::SliderFloat("Block height", &h, 0.5f, 16.0f, "%.2f")) build_.setBlockSize(w, h);
+    // --- Texture manager (shared library + active texture + UV scale) ---
+    // Always visible so textures can be loaded/selected in any mode, but most
+    // useful in ModeTexture (C) where clicking a face paints the active one.
+    ImGui::TextDisabled("Texture manager");
+    if (ImGui::Button("Load texture...")) {
+        std::string p = openFileDialog("Image", "*.png;*.jpg;*.jpeg;*.tga;*.bmp");
+        if (!p.empty()) {
+            int idx = build_.loadBlockTexture(p);
+            if (idx >= 0) build_.setCurrentTexture(idx);
+        }
+    }
+    int nTex = build_.blockTextureCount();
+    int curTex = build_.currentTexture();
+    if (nTex > 0) {
+        for (int i = 0; i < nTex; ++i) {
+            ImGui::PushID(i);
+            GLuint tid = build_.blockTextureId(i);
+            bool active = (curTex == i);
+            // Highlight the active texture slot.
+            ImVec2 p0 = ImGui::GetCursorScreenPos();
+            ImVec2 box1(p0.x + 44, p0.y + 36);
+            if (active) dl->AddRect(p0, box1, IM_COL32(255, 230, 110, 255), 4.0f, 0, 2.0f);
+            ImGui::Image((ImTextureID)(intptr_t)tid, ImVec2(32, 32));
+            ImGui::SameLine();
+            if (ImGui::Selectable(build_.blockTextureName(i).c_str(), active,
+                                  ImGuiSelectableFlags_SpanAllColumns,
+                                  ImVec2(0, 32)))
+                build_.setCurrentTexture(i);
+            ImGui::SameLine();
+            if (ImGui::SmallButton("X")) {
+                build_.removeBlockTexture(i);
+                ImGui::PopID();
+                break;
+            }
+            ImGui::PopID();
+        }
+    } else {
+        ImGui::TextDisabled("(no textures loaded)");
+    }
+    float dts = build_.defaultTexScale();
+    int dtm = build_.defaultTexMode();
+    const char* modeNames2[] = { "Stretch", "Tile" };
+    if (ImGui::Combo("Texture mode", &dtm, modeNames2, 2))
+        build_.setDefaultTexMode(dtm);
+    if (dtm == 1) {
+        if (ImGui::SliderFloat("UV scale (tile)", &dts, 0.05f, 8.0f, "%.2f"))
+            build_.setDefaultTexScale(dts);
+    } else {
+        ImGui::TextDisabled("UV scale: n/a (Stretch)");
+    }
+    if (curTex >= 0)
+        ImGui::Text("Active: %s", build_.blockTextureName(curTex).c_str());
+    else
+        ImGui::TextDisabled("(no active texture — load one to paint)");
+    ImGui::Separator();
 
+    // --- Mode-specific placement settings ---
     if (build_.mode() == BuildSystem::ModeFoundation) {
+        float w = build_.blockWidth(), h = build_.blockHeight();
+        if (ImGui::SliderFloat("Block width",  &w, 0.5f, 16.0f, "%.2f")) build_.setBlockSize(w, h);
+        if (ImGui::SliderFloat("Block height", &h, 0.5f, 16.0f, "%.2f")) build_.setBlockSize(w, h);
         float sunk = build_.sunkDepth();
         if (ImGui::SliderFloat("Foundation sink", &sunk, 0.0f, 0.95f, "%.2f"))
             build_.setSunkDepth(sunk);
-    } else {
+        glm::vec3 c = build_.color();
+        float cf[3] = { c.r, c.g, c.b };
+        if (ImGui::ColorEdit3("Block color", cf))
+            build_.setColor(glm::vec3(cf[0], cf[1], cf[2]));
+    } else if (build_.mode() == BuildSystem::ModeWall) {
+        float w = build_.blockWidth(), h = build_.blockHeight();
+        if (ImGui::SliderFloat("Block width",  &w, 0.5f, 16.0f, "%.2f")) build_.setBlockSize(w, h);
+        if (ImGui::SliderFloat("Block height", &h, 0.5f, 16.0f, "%.2f")) build_.setBlockSize(w, h);
         float wt = build_.wallThickness();
         if (ImGui::SliderFloat("Wall thickness", &wt, 0.1f, 4.0f, "%.2f"))
             build_.setWallThickness(wt);
@@ -1546,19 +1713,19 @@ void App::drawBuildContent() {
         int we = build_.wallEdge();
         if (ImGui::Combo("Wall edge (R)", &we, edgeNames, 4))
             build_.setWallEdge(we);
-        ImGui::TextWrapped("R cycles the edge the wall sits on (+X/+Z/-X/-Z). "
-                           "Drag on a block top to run a wall along that edge. "
-                           "Walls only place where a block supports them.");
+        glm::vec3 c = build_.color();
+        float cf[3] = { c.r, c.g, c.b };
+        if (ImGui::ColorEdit3("Block color", cf))
+            build_.setColor(glm::vec3(cf[0], cf[1], cf[2]));
+    } else {
+        // ModeTexture: only the shared settings apply (no block size/color).
     }
 
-    float step = build_.gridStep();
-    if (ImGui::SliderFloat("Grid step", &step, 0.25f, 8.0f, "%.2f"))
-        build_.setGridStep(step);
-
-    glm::vec3 c = build_.color();
-    float cf[3] = { c.r, c.g, c.b };
-    if (ImGui::ColorEdit3("Block color", cf))
-        build_.setColor(glm::vec3(cf[0], cf[1], cf[2]));
+    if (build_.mode() != BuildSystem::ModeTexture) {
+        float step = build_.gridStep();
+        if (ImGui::SliderFloat("Grid step", &step, 0.25f, 8.0f, "%.2f"))
+            build_.setGridStep(step);
+    }
 
     ImGui::Separator();
     ImGui::Text("Placed blocks: %d", build_.count());
@@ -1566,10 +1733,12 @@ void App::drawBuildContent() {
     if (ImGui::Button("Clear All")) {
         build_.clear();
         selectedBlockId_ = -1;
+        selectedBlockFace_ = -1;
     }
 
     ImGui::Separator();
     ImGui::TextDisabled("Selected block");
+    const char* faceNames[] = { "+X", "-X", "+Y", "-Y", "+Z", "-Z" };
     if (selectedBlockId_ >= 0) {
         const BuildSystem::Block* b = build_.findBlock(selectedBlockId_);
         if (b) {
@@ -1577,26 +1746,53 @@ void App::drawBuildContent() {
                         b->type == BuildSystem::Foundation ? "Foundation" : "Wall");
             ImGui::Text("pos (%.1f, %.1f, %.1f)",
                         b->position.x, b->position.y, b->position.z);
-            if (ImGui::Button("Delete (Del)")) {
+            if (selectedBlockFace_ >= 0)
+                ImGui::Text("Picked face: %s", faceNames[selectedBlockFace_]);
+            if (b->textureIdx >= 0) {
+                ImGui::Text("Texture: %s on %s",
+                            build_.blockTextureName(b->textureIdx).c_str(),
+                            (b->textureFace >= 0 && b->textureFace < 6)
+                                ? faceNames[b->textureFace] : "?");
+                int tm = b->texMode;
+                const char* tmn[] = { "Stretch", "Tile" };
+                if (ImGui::Combo("Tex mode", &tm, tmn, 2))
+                    build_.setBlockTexMode(selectedBlockId_, tm);
+                if (b->texMode == 1) {
+                    float sc = b->texScale;
+                    if (ImGui::SliderFloat("UV scale", &sc, 0.05f, 8.0f, "%.2f"))
+                        build_.setBlockTexScale(selectedBlockId_, sc);
+                }
+                if (ImGui::Button("Clear face texture"))
+                    build_.clearBlockFaceTexture(selectedBlockId_);
+            }
+            if (ImGui::Button("Delete block (Del)")) {
                 build_.removeBlock(selectedBlockId_);
                 selectedBlockId_ = -1;
+                selectedBlockFace_ = -1;
             }
         }
     } else {
-        ImGui::TextDisabled("(none)");
+        ImGui::TextDisabled("(none — right-click a block to inspect)");
     }
 
     ImGui::Separator();
     if (build_.mode() == BuildSystem::ModeFoundation) {
-        ImGui::TextWrapped("Drag on terrain: rectangle of foundation blocks "
-                           "(sunk, same level as neighbours). "
-                           "Click block side: extend foundation. "
-                           "Ctrl+drag: erase. Del: remove selected.");
-    } else {
+        ImGui::TextWrapped("Drag on terrain: foundation rectangle (sunk, same "
+                           "level as neighbours). Click block side: extend "
+                           "foundation. Ctrl+drag: erase. "
+                           "Right-click: inspect block. Del: remove selected.");
+    } else if (build_.mode() == BuildSystem::ModeWall) {
         ImGui::TextWrapped("Drag on block TOP along an edge: thin wall line "
-                           "following that edge. Walls only stand on a "
-                           "supporting block's rim, not its centre. "
-                           "Ctrl+drag: erase. Del: remove selected.");
+                           "following that edge. R cycles the edge. "
+                           "Ctrl+drag: erase. Right-click: inspect block. "
+                           "Del: remove selected.");
+    } else {
+        ImGui::TextWrapped("Drag on a face to stretch-select a region: "
+                           "horizontal faces give a rectangle, vertical faces "
+                           "give a line. On release the active texture is "
+                           "applied to every block in that region. "
+                           "Ctrl+click: clear a face's texture. "
+                           "Right-click: inspect block.");
     }
 }
 
@@ -1749,14 +1945,22 @@ void App::drawHelpOverlay() {
     } else if (toolMode_ == ToolBuild) {
         ImGui::Separator();
         ImGui::TextUnformatted("Build tool:");
+        ImGui::BulletText("Z: foundation mode  X: wall mode  C: texture mode");
         if (build_.mode() == BuildSystem::ModeFoundation) {
             ImGui::BulletText("Drag terrain: foundation rectangle");
             ImGui::BulletText("Click block side: extend foundation");
-        } else {
+            ImGui::BulletText("Ctrl+drag: erase rectangle");
+        } else if (build_.mode() == BuildSystem::ModeWall) {
             ImGui::BulletText("Drag block top: wall on edge");
             ImGui::BulletText("R: cycle wall edge (+X/+Z/-X/-Z)");
+            ImGui::BulletText("Ctrl+drag: erase rectangle");
+        } else {
+            ImGui::BulletText("Drag on face: stretch-select region");
+            ImGui::BulletText("Horizontal face = rectangle, vertical = line");
+            ImGui::BulletText("Ctrl+click: clear face texture");
+            ImGui::BulletText("Load+select texture in the panel");
         }
-        ImGui::BulletText("Ctrl+drag: erase rectangle");
+        ImGui::BulletText("Right-click: inspect block");
         ImGui::BulletText("Del: remove selected block");
     } else {
         ImGui::Separator();
@@ -1779,9 +1983,9 @@ void App::drawHelpOverlay() {
                     props_.count(),
                     props_.selectedId() >= 0 ? std::to_string(props_.selectedId()).c_str() : "none");
     } else if (toolMode_ == ToolBuild) {
-        const char* mn = build_.mode() == BuildSystem::ModeFoundation ? "Foundation" : "Wall";
+        const char* mn[] = { "Foundation", "Wall", "Texture" };
         ImGui::Text("Blocks: %d  Mode: %s  Selected: %s",
-                    build_.count(), mn,
+                    build_.count(), mn[(int)build_.mode()],
                     selectedBlockId_ >= 0 ? std::to_string(selectedBlockId_).c_str() : "none");
     } else {
         const char* dm = vertexEditor_.dragMode() == VertexEditor::FreeXYZ  ? "Free XYZ" :

@@ -7,10 +7,12 @@ uniform mat4 uViewProj;
 
 out vec3 vNormal;
 out vec3 vWorldPos;
+out vec3 vLocalPos;
 
 void main() {
     vec4 wp = uModel * vec4(aPos, 1.0);
     vWorldPos = wp.xyz;
+    vLocalPos = aPos;
     vNormal = mat3(uModel) * aNormal;
     gl_Position = uViewProj * wp;
 }
