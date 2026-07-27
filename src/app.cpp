@@ -289,6 +289,21 @@ void App::handleInput(float dt) {
         camera_.pan(float(g_input.mouseDeltaX()), float(g_input.mouseDeltaY()));
     }
 
+    // WASD: move camera target in the XZ plane (skip while typing in a text field).
+    if (!io.WantTextInput) {
+        float yaw = camera_.yaw();
+        glm::vec3 fwdXZ(-std::sin(yaw), 0.0f, -std::cos(yaw));
+        glm::vec3 rightXZ(std::cos(yaw), 0.0f, -std::sin(yaw));
+        float speed = camera_.distance() * 1.0f * dt;
+        glm::vec3 move(0.0f);
+        if (g_input.keyDown(GLFW_KEY_W)) move += fwdXZ;
+        if (g_input.keyDown(GLFW_KEY_S)) move -= fwdXZ;
+        if (g_input.keyDown(GLFW_KEY_D)) move += rightXZ;
+        if (g_input.keyDown(GLFW_KEY_A)) move -= rightXZ;
+        if (move.x != 0.0f || move.z != 0.0f)
+            camera_.moveTarget(move * speed);
+    }
+
     // Scroll: modifiers change brush radius/strength, plain scroll zooms.
     if (g_input.scrollDelta() != 0.0f) {
         bool shift = g_input.keyDown(GLFW_KEY_LEFT_SHIFT) ||
@@ -1927,6 +1942,7 @@ void App::drawHelpOverlay() {
     ImGui::BulletText("Left rail: pick tool / settings panel");
     ImGui::BulletText("Bottom bar: pick a brush (switches to Brush mode)");
     ImGui::BulletText("Tab: cycle Brush / Prop / Vertex / Build tool");
+    ImGui::BulletText("WASD: move camera (hold)");
     ImGui::BulletText("Right-drag: orbit camera");
     ImGui::BulletText("Middle-drag: pan camera");
     ImGui::BulletText("Scroll: zoom (Shift+scroll: brush size, Ctrl+scroll: strength)");
