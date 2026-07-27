@@ -670,6 +670,18 @@ static void CatProps(ImDrawList* dl, ImVec2 p0, ImVec2 p1, ImU32 col) {
     dl->AddLine(f0, b0, col, w); dl->AddLine(f1, b1, col, w);
     dl->AddLine(f2, b2, col, w); dl->AddLine(f3, b3, col, w);
 }
+static void CatVegetation(ImDrawList* dl, ImVec2 p0, ImVec2 p1, ImU32 col) {
+    float cx = (p0.x + p1.x) * 0.5f;
+    float baseY = p1.y - (p1.y - p0.y) * 0.15f;
+    float topY = p0.y + (p1.y - p0.y) * 0.15f;
+    float trunkW = (p1.x - p0.x) * 0.04f;
+    float trunkTop = baseY - (baseY - topY) * 0.45f;
+    dl->AddRectFilled(ImVec2(cx - trunkW, baseY), ImVec2(cx + trunkW, trunkTop), col);
+    float cw = (p1.x - p0.x) * 0.28f;
+    dl->AddTriangleFilled(ImVec2(cx, topY),
+                           ImVec2(cx - cw, trunkTop + (baseY - trunkTop) * 0.15f),
+                           ImVec2(cx + cw, trunkTop + (baseY - trunkTop) * 0.15f), col);
+}
 static void CatTerrain(ImDrawList* dl, ImVec2 p0, ImVec2 p1, ImU32 col) {
     float x0 = p0.x + (p1.x - p0.x) * 0.2f, x1 = p1.x - (p1.x - p0.x) * 0.2f;
     float base = p1.y - (p1.y - p0.y) * 0.25f;
@@ -740,13 +752,14 @@ static IconFn brushIcon(int type) {
 }
 static IconFn catIcon(int cat) {
     switch (cat) {
-        case App::CatBrush:    return &CatBrush;
-        case App::CatVertex:   return &CatVertex;
-        case App::CatProps:    return &CatProps;
-        case App::CatTerrain:  return &CatTerrain;
-        case App::CatLayers:   return &CatLayers;
-        case App::CatEnv:      return &CatEnv;
-        case App::CatView:     return &CatView;
+        case App::CatBrush:      return &CatBrush;
+        case App::CatVertex:     return &CatVertex;
+        case App::CatProps:      return &CatProps;
+        case App::CatVegetation: return &CatVegetation;
+        case App::CatTerrain:    return &CatTerrain;
+        case App::CatLayers:     return &CatLayers;
+        case App::CatEnv:        return &CatEnv;
+        case App::CatView:       return &CatView;
         default: return nullptr;
     }
 }
@@ -754,8 +767,9 @@ static const char* catName(int cat) {
     switch (cat) {
         case App::CatBrush:    return "Brush";
         case App::CatVertex:   return "Vertex";
-        case App::CatProps:    return "Props";
-        case App::CatTerrain:  return "Terrain";
+        case App::CatProps:      return "Props";
+        case App::CatVegetation: return "Vegetation";
+        case App::CatTerrain:    return "Terrain";
         case App::CatLayers:   return "Layers";
         case App::CatEnv:      return "Environment";
         case App::CatView:     return "View";
@@ -774,6 +788,10 @@ void App::selectCategory(int cat) {
     if (cat == CatBrush)  toolMode_ = ToolPaint;
     else if (cat == CatVertex) { toolMode_ = ToolVertex; wireframe_ = true; }
     else if (cat == CatProps)  toolMode_ = ToolProp;
+    else if (cat == CatVegetation) {
+        toolMode_ = ToolPaint;
+        brush_.type = Terrain::BrushParams::Vegetation;
+    }
 }
 
 void App::drawLeftPanel() {
@@ -818,8 +836,8 @@ void App::drawLeftPanel() {
     // --- Rail (left column, full height) ---
     ImGui::BeginChild("##rail", ImVec2(railW, 0), true, ImGuiWindowFlags_NoScrollbar);
     ImVec2 railStart = ImGui::GetCursorScreenPos();
-    int order[CatCount + 1] = { CatBrush, CatVertex, CatProps, -1,
-                                CatTerrain, CatLayers, CatEnv, CatView };
+    int order[CatCount + 1] = { CatBrush, CatVertex, CatProps, CatVegetation, -1,
+                                 CatTerrain, CatLayers, CatEnv, CatView };
     ImVec2 cursor = railStart;
     for (int o = 0; o < CatCount + 1; ++o) {
         int cat = order[o];
@@ -842,13 +860,14 @@ void App::drawLeftPanel() {
     ImGui::SameLine();
     ImGui::BeginChild("##content", ImVec2(0, 0), true);
     switch (activeCategory_) {
-        case CatBrush:   drawBrushContent();  break;
-        case CatVertex:  drawVertexContent(); break;
-        case CatProps:   drawPropsContent();  break;
-        case CatTerrain: drawTerrainContent();break;
-        case CatLayers:  drawLayersContent(); break;
-        case CatEnv:     drawEnvContent();    break;
-        case CatView:    drawViewContent();   break;
+        case CatBrush:      drawBrushContent();      break;
+        case CatVertex:     drawVertexContent();     break;
+        case CatProps:      drawPropsContent();      break;
+        case CatVegetation: drawVegetationContent(); break;
+        case CatTerrain:    drawTerrainContent();     break;
+        case CatLayers:     drawLayersContent();      break;
+        case CatEnv:        drawEnvContent();         break;
+        case CatView:       drawViewContent();        break;
     }
     ImGui::EndChild();
 
@@ -904,7 +923,8 @@ void App::drawBrushBar() {
         if (ImGui::IsItemClicked()) {
             brush_.type = (Terrain::BrushParams::Type)i;
             toolMode_ = ToolPaint;
-            activeCategory_ = CatBrush;
+            activeCategory_ = (i == Terrain::BrushParams::Vegetation)
+                              ? CatVegetation : CatBrush;
         }
     }
     ImGui::End();
@@ -1044,6 +1064,99 @@ void App::drawPropsContent() {
             props_.removeProp(sel->id);
         }
     }
+}
+
+void App::drawVegetationContent() {
+    ImGui::TextDisabled("Vegetation / Details");
+    ImGui::Separator();
+
+    // Import section.
+    if (ImGui::Button("Import Model...")) {
+        std::string path = openFileDialog();
+        if (!path.empty()) {
+            auto model = std::make_shared<Model>();
+            if (model->loadFromFile(path)) {
+                modelLibrary_.push_back(model);
+                std::filesystem::path fp(path);
+                // Default size: aim for ~15 world units unless the model is
+                // already small (then keep its native size).
+                float nativeMax = std::max({
+                    model->aabbSize().x, model->aabbSize().y, model->aabbSize().z});
+                float defSize = nativeMax > 100.0f ? 15.0f : std::max(2.0f, nativeMax);
+                details_.addPrototype(model, fp.filename().string(), defSize);
+            } else {
+                std::cerr << "Failed to load: " << path << "\n";
+            }
+        }
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Clear Instances"))
+        details_.clearInstances();
+    ImGui::SameLine();
+    ImGui::Text("(%d)", details_.instanceCount());
+
+    ImGui::Separator();
+
+    // Prototype palette — pick which model to paint with.
+    if (details_.prototypeCount() == 0) {
+        ImGui::TextDisabled("No prototypes loaded. Click \"Import Model...\" "
+                            "to load a glTF/GLB file.");
+    }
+    for (int i = 0; i < details_.prototypeCount(); ++i) {
+        const auto& p = details_.prototype(i);
+        bool sel = (details_.activePrototype() == i);
+        ImGui::PushID(i);
+        // Header row: selectable name + delete button.
+        char hdr[256];
+        std::snprintf(hdr, sizeof(hdr), "%s  (%d inst)",
+                      p.name.c_str(), 0);
+        if (ImGui::Selectable(p.name.c_str(), sel, ImGuiSelectableFlags_AllowDoubleClick, ImVec2(0, 0))) {
+            if (ImGui::IsMouseDoubleClicked(0)) {
+                // Double-click also paints one instance at terrain centre.
+            }
+            details_.setActivePrototype(i);
+            brush_.type = Terrain::BrushParams::Vegetation;
+            toolMode_ = ToolPaint;
+        }
+        ImGui::SameLine();
+        if (ImGui::SmallButton("X")) { details_.removePrototype(i); ImGui::PopID(); break; }
+
+        // Show native model size so user understands the scale.
+        if (p.model && p.model->valid()) {
+            glm::vec3 sz = p.model->aabbSize();
+            ImGui::Indent();
+            ImGui::TextDisabled("native %.1f x %.1f x %.1f", sz.x, sz.y, sz.z);
+            ImGui::Unindent();
+        }
+
+        // Per-prototype settings (only for the active prototype).
+        if (sel) {
+            auto* proto = details_.prototypeMutable(i);
+            if (proto) {
+                ImGui::Indent();
+                ImGui::SliderFloat("Target Size", &proto->targetSize, 0.5f, 80.0f, "%.1f");
+                ImGui::SliderFloat("Min Scale",   &proto->minScale,   0.1f, 3.0f, "%.2f");
+                ImGui::SliderFloat("Max Scale",   &proto->maxScale,   0.1f, 3.0f, "%.2f");
+                if (proto->minScale > proto->maxScale) proto->minScale = proto->maxScale;
+                ImGui::SliderFloat("Random Yaw",  &proto->randomYaw,  0.0f, 1.0f, "%.2f");
+                ImGui::Unindent();
+            }
+        }
+        ImGui::PopID();
+        ImGui::Separator();
+    }
+
+    // Brush settings for painting density.
+    ImGui::TextDisabled("Brush");
+    ImGui::SliderFloat("Radius",   &brush_.radius,   1.0f, terrain_.worldSize() * 0.4f, "%.1f");
+    ImGui::SliderFloat("Density",  &brush_.strength, 0.05f, 2.0f, "%.2f");
+    const char* fnames[] = { "Smooth", "Linear", "Constant" };
+    ImGui::Combo("Falloff", &brush_.falloff, fnames, 3);
+    if (brush_.radius != 0.0f) brushCursor_.setShape(brush_.radius);
+
+    ImGui::Separator();
+    ImGui::TextWrapped("Left-drag: paint instances. Ctrl+left-drag: erase. "
+                       "Density controls how many per stroke step.");
 }
 
 void App::drawTerrainContent() {
