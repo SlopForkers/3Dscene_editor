@@ -93,6 +93,7 @@ bool App::initOpenGL() {
     terrain_.generateHills();
     brushCursor_.create();
     brushCursor_.setShape(brush_.radius);
+    gizmo_.create();
 
     // Unit-cube wireframe (24 vertices, 12 edges) for prop selection boxes.
     {
@@ -135,6 +136,7 @@ void App::shutdown() {
         ImGui_ImplGlfw_Shutdown();
         ImGui::DestroyContext();
         brushCursor_.destroy();
+        gizmo_.destroy();
         terrain_.destroy();
         if (boxVao_) { glDeleteVertexArrays(1, &boxVao_); boxVao_ = 0; }
         if (boxVbo_) { glDeleteBuffers(1, &boxVbo_); boxVbo_ = 0; }
@@ -245,7 +247,6 @@ void App::handleInput(float dt) {
     if (g_input.keyPressed(GLFW_KEY_TAB)) {
         toolMode_ = (toolMode_ == ToolPaint) ? ToolProp : ToolPaint;
         painting_ = false;
-        draggingProp_ = false;
     }
 
     // Left-button behaviour depends on the active tool.
@@ -276,51 +277,36 @@ void App::handleInput(float dt) {
             }
         }
     } else {
-        // Prop tool: click selects/moves props.
-        if (g_input.mousePressed(Input::Left) && !overUI) {
-            double sx = g_input.mouseX() * (double)fbWidth_  / (double)winWidth_;
-            double sy = g_input.mouseY() * (double)fbHeight_ / (double)winHeight_;
-            glm::vec3 origin, dir;
-            camera_.screenToRay((float)sx, (float)sy, origin, dir);
+        // Prop tool.
+        Prop* sel = props_.selected();
 
-            int picked = props_.pick(origin, dir);
-            if (picked >= 0) {
-                props_.select(picked);
-                draggingProp_ = true;
-                glm::vec3 hit;
-                if (terrain_.raycast(origin, dir, hit)) {
-                    Prop* p = props_.selected();
-                    if (p) propDragOffset_ = p->position - hit;
-                }
-            } else {
-                glm::vec3 hit;
-                if (terrain_.raycast(origin, dir, hit) && props_.selected()) {
-                    Prop* p = props_.selected();
-                    if (p) {
-                        propDragOffset_ = glm::vec3(0.0f);
-                        p->position = glm::vec3(hit.x, p->position.y, hit.z);
-                        draggingProp_ = true;
-                    }
+        // The gizmo takes priority when a prop is selected.
+        bool gizmoConsumed = false;
+        if (sel) {
+            Gizmo::Transform cur{ sel->position, sel->rotationEuler, sel->scale };
+            Gizmo::Transform next;
+            if (gizmo_.handleInput(camera_, sel->position, cur, next, io)) {
+                gizmoConsumed = true;
+                if (gizmo_.dragging()) {
+                    sel->position       = next.position;
+                    sel->rotationEuler  = next.rotationEuler;
+                    sel->scale          = next.scale;
                 }
             }
         }
-        if (g_input.mouseReleased(Input::Left)) {
-            draggingProp_ = false;
-        }
-        if (draggingProp_ && props_.selected()) {
+
+        // If the gizmo did not consume the input, do prop picking on press.
+        if (!gizmoConsumed && g_input.mousePressed(Input::Left) && !overUI) {
             double sx = g_input.mouseX() * (double)fbWidth_  / (double)winWidth_;
             double sy = g_input.mouseY() * (double)fbHeight_ / (double)winHeight_;
             glm::vec3 origin, dir;
             camera_.screenToRay((float)sx, (float)sy, origin, dir);
-            glm::vec3 hit;
-            if (terrain_.raycast(origin, dir, hit)) {
-                Prop* p = props_.selected();
-                if (p) {
-                    float above = p->position.y - terrain_.heightAtWorld(p->position.x, p->position.z);
-                    p->position = glm::vec3(hit.x + propDragOffset_.x,
-                                            terrain_.heightAtWorld(hit.x, hit.z) + above,
-                                            hit.z + propDragOffset_.z);
-                }
+            int picked = props_.pick(origin, dir);
+            if (picked >= 0) {
+                props_.select(picked);
+            } else {
+                // Click on empty space deselects.
+                props_.select(-1);
             }
         }
     }
@@ -333,6 +319,13 @@ void App::handleInput(float dt) {
     if (g_input.keyPressed(GLFW_KEY_5)) brush_.type = Terrain::BrushParams::Noise;
     if (g_input.keyPressed(GLFW_KEY_F)) wireframe_ = !wireframe_;
     if (g_input.keyPressed(GLFW_KEY_H)) showHelp_ = !showHelp_;
+
+    // Gizmo mode shortcuts (only relevant in prop tool).
+    if (toolMode_ == ToolProp) {
+        if (g_input.keyPressed(GLFW_KEY_T)) gizmo_.setMode(Gizmo::Translate);
+        if (g_input.keyPressed(GLFW_KEY_R)) gizmo_.setMode(Gizmo::Rotate);
+        if (g_input.keyPressed(GLFW_KEY_S)) gizmo_.setMode(Gizmo::Scale);
+    }
 }
 
 void App::renderScene() {
@@ -362,6 +355,17 @@ void App::renderScene() {
     }
     // Selection box for the currently selected prop.
     drawSelectionBox();
+
+    // Gizmo for the selected prop (prop tool only).
+    if (toolMode_ == ToolProp) {
+        Prop* sel = props_.selected();
+        if (sel) {
+            // Draw gizmo on top of everything, ignoring depth so it stays visible.
+            glDisable(GL_DEPTH_TEST);
+            gizmo_.draw(camera_, sel->position, lineShader_);
+            glEnable(GL_DEPTH_TEST);
+        }
+    }
 
     // Brush cursor — only relevant in paint mode.
     if (showCursor_ && toolMode_ == ToolPaint) {
@@ -535,6 +539,17 @@ void App::drawPropsPanel() {
     ImGui::SameLine();
     if (ImGui::Button(toolMode_ == ToolPaint ? "Switch to Prop" : "Switch to Brush")) {
         toolMode_ = (toolMode_ == ToolPaint) ? ToolProp : ToolPaint;
+    }
+
+    if (toolMode_ == ToolProp) {
+        ImGui::Text("Gizmo:");
+        ImGui::SameLine();
+        int mode = gizmo_.mode();
+        if (ImGui::RadioButton("Move", mode == Gizmo::Translate)) gizmo_.setMode(Gizmo::Translate);
+        ImGui::SameLine();
+        if (ImGui::RadioButton("Rotate", mode == Gizmo::Rotate)) gizmo_.setMode(Gizmo::Rotate);
+        ImGui::SameLine();
+        if (ImGui::RadioButton("Scale", mode == Gizmo::Scale)) gizmo_.setMode(Gizmo::Scale);
     }
 
     ImGui::Separator();

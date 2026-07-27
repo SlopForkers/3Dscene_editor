@@ -25,6 +25,7 @@ public:
 
     int viewportWidth() const { return viewportWidth_; }
     int viewportHeight() const { return viewportHeight_; }
+    float fov() const { return fov_; }
 
     // Build a ray in world space from screen pixel coordinates.
     // Returns origin and direction.

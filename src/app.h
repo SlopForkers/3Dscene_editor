@@ -6,6 +6,7 @@
 #include "brush.h"
 #include "shader.h"
 #include "prop.h"
+#include "gizmo.h"
 #include <memory>
 #include <string>
 #include <vector>
@@ -66,8 +67,7 @@ private:
     bool  hasPaintPoint_ = false;
 
     // Prop interaction
-    bool draggingProp_ = false;
-    glm::vec3 propDragOffset_ = glm::vec3(0.0f);
+    Gizmo gizmo_;
 
     // Display options
     bool wireframe_ = false;

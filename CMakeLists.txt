@@ -132,6 +132,8 @@ set(SOURCES
     src/model.h
     src/prop.cpp
     src/prop.h
+    src/gizmo.cpp
+    src/gizmo.h
     src/file_dialog.cpp
     src/file_dialog.h
 )
