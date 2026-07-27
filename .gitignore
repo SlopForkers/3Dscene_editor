@@ -90,3 +90,5 @@ $RECYCLE.BIN/
 *.profraw
 *.data
 run_err.txt
+
+assets/
