@@ -22,6 +22,14 @@ public:
 
     int run(const std::vector<std::string>& importArgs = {});
 
+    // Left-rail categories (group tool modes and setting panels). Public so
+    // the file-scope icon helpers in app.cpp can switch on them.
+    enum Category {
+        CatBrush = 0, CatVertex, CatProps,   // tool categories (switch toolMode)
+        CatTerrain, CatLayers, CatEnv, CatView,  // setting categories
+        CatCount
+    };
+
 private:
     bool initWindow();
     bool initOpenGL();
@@ -33,13 +41,24 @@ private:
     void renderImGui();
 
     // ImGui helpers
-    void drawMainPanel();
+    void drawLeftPanel();
+    void drawBrushBar();
     void drawHelpOverlay();
     void drawSelectionBox();
+    void selectCategory(int cat);
+    void drawBrushContent();
+    void drawVertexContent();
+    void drawPropsContent();
+    void drawTerrainContent();
+    void drawLayersContent();
+    void drawEnvContent();
+    void drawViewContent();
 
     // Tool modes: 0 = terrain brush, 1 = prop select/place, 2 = vertex edit
     enum ToolMode { ToolPaint = 0, ToolProp = 1, ToolVertex = 2 };
     int toolMode_ = ToolPaint;
+
+    int activeCategory_ = CatBrush;
 
     // Import a glTF/VRM file and spawn a prop at the terrain centre.
     void importModel(const std::string& path);

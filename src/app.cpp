@@ -274,10 +274,14 @@ void App::handleInput(float dt) {
 
     // Tab cycles between terrain brush, prop and vertex-edit tools.
     if (g_input.keyPressed(GLFW_KEY_TAB)) {
+        bool wasVertex = (toolMode_ == ToolVertex);
         toolMode_ = (toolMode_ == ToolPaint) ? ToolProp :
                     (toolMode_ == ToolProp)  ? ToolVertex : ToolPaint;
         painting_ = false;
-        if (toolMode_ == ToolVertex) wireframe_ = true;
+        if (wasVertex && toolMode_ != ToolVertex) wireframe_ = false;
+        if (toolMode_ == ToolPaint)       activeCategory_ = CatBrush;
+        else if (toolMode_ == ToolProp)    activeCategory_ = CatProps;
+        else if (toolMode_ == ToolVertex) { activeCategory_ = CatVertex; wireframe_ = true; }
     }
 
     // Left-button behaviour depends on the active tool.
@@ -474,244 +478,572 @@ void App::renderImGui() {
     ImGui_ImplGlfw_NewFrame();
     ImGui::NewFrame();
 
-    drawMainPanel();
+    drawLeftPanel();
+    drawBrushBar();
     if (showHelp_) drawHelpOverlay();
 
     ImGui::Render();
     ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
 }
 
-void App::drawMainPanel() {
-    ImGui::SetNextWindowPos(ImVec2(10, 10), ImGuiCond_FirstUseEver);
-    ImGui::SetNextWindowSize(ImVec2(310, 0), ImGuiCond_FirstUseEver);
-    ImGui::Begin("Scene Editor");
+// --------------------------------------------------------------------------
+// Mini icon helpers (drawn via ImDrawList, no external assets).
+// Each icon is inscribed in [p0, p1]; col is the stroke/fill colour.
+// --------------------------------------------------------------------------
+namespace icons {
 
-    if (ImGui::BeginTabBar("##tabs", ImGuiTabBarFlags_None)) {
-        // ---- Brush tab ----
-        if (ImGui::BeginTabItem("Brush")) {
-            const char* names[] = { "Raise", "Lower", "Smooth", "Flatten", "Noise", "Set H", "Texture" };
-            for (int i = 0; i < 7; ++i) {
-                bool sel = (brush_.type == i);
-                if (ImGui::RadioButton(names[i], sel)) brush_.type = (Terrain::BrushParams::Type)i;
-                if ((i + 1) % 4 != 0) ImGui::SameLine();
-            }
-            ImGui::Separator();
-
-            ImGui::SliderFloat("Radius",   &brush_.radius,   1.0f, terrain_.worldSize() * 0.4f, "%.1f");
-            ImGui::SliderFloat("Strength", &brush_.strength, 0.01f, 5.0f, "%.2f");
-
-            const char* fnames[] = { "Smooth", "Linear", "Constant" };
-            ImGui::Combo("Falloff", &brush_.falloff, fnames, 3);
-
-            if (brush_.type == Terrain::BrushParams::Flatten ||
-                brush_.type == Terrain::BrushParams::Set) {
-                ImGui::SliderFloat("Target Height", &brush_.target,
-                                   -20.0f, 40.0f, "%.1f");
-            }
-
-            if (brush_.type == Terrain::BrushParams::Texture) {
-                ImGui::Separator();
-                ImGui::Text("Texture layer:");
-                for (int i = 0; i < terrain_.layerCount(); ++i) {
-                    bool sel = (brush_.textureLayer == i);
-                    const std::string& ln = terrain_.layers()[i].name;
-                    if (ImGui::RadioButton(ln.c_str(), sel)) brush_.textureLayer = i;
-                    if ((i + 1) % 2 != 0) ImGui::SameLine();
-                }
-                // Texture brush strength should stay in a sane 0..1 range.
-                brush_.strength = std::clamp(brush_.strength, 0.01f, 1.0f);
-            }
-
-            if (brush_.radius != 0.0f) brushCursor_.setShape(brush_.radius);
-            ImGui::EndTabItem();
-        }
-
-        // ---- Textures tab ----
-        if (ImGui::BeginTabItem("Textures")) {
-            for (int i = 0; i < terrain_.layerCount(); ++i) {
-                const auto& l = terrain_.layers()[i];
-                ImGui::PushID(i);
-                ImGui::Text("%d: %s", i, l.name.c_str());
-                if (l.albedo) {
-                    ImGui::SameLine();
-                    ImGui::Image((ImTextureID)(intptr_t)l.albedo, ImVec2(48, 48));
-                }
-                if (ImGui::Button("Albedo...")) {
-                    std::string p = openFileDialog("Image", "*.png;*.jpg;*.jpeg;*.tga;*.bmp");
-                    if (!p.empty()) terrain_.loadLayerAlbedo(i, p);
-                }
-                ImGui::SameLine();
-                if (ImGui::Button("Normal...")) {
-                    std::string p = openFileDialog("Image", "*.png;*.jpg;*.jpeg;*.tga;*.bmp");
-                    if (!p.empty()) terrain_.loadLayerNormal(i, p);
-                }
-                float ts = l.tileSize;
-                if (ImGui::SliderFloat("Tile size", &ts, 0.5f, 64.0f, "%.1f"))
-                    terrain_.setLayerTileSize(i, ts);
-                ImGui::PopID();
-                ImGui::Separator();
-            }
-            if (ImGui::Button("Reset Splat")) terrain_.resetSplat();
-            ImGui::EndTabItem();
-        }
-
-        // ---- Terrain tab ----
-        if (ImGui::BeginTabItem("Terrain")) {
-            ImGui::Text("Grid: %d x %d", terrain_.gridX(), terrain_.gridZ());
-            ImGui::Text("World size: %.0f m", terrain_.worldSize());
-            ImGui::Text("Height range: %.2f .. %.2f", terrain_.minHeight(), terrain_.maxHeight());
-            if (ImGui::Button("Flatten")) terrain_.flatten(0.0f);
-            ImGui::SameLine();
-            if (ImGui::Button("Generate Hills")) terrain_.generateHills();
-            ImGui::EndTabItem();
-        }
-
-        // ---- Vertex tab ----
-        if (ImGui::BeginTabItem("Vertex")) {
-            ImGui::TextDisabled("Press Tab to enter vertex-edit mode (wireframe).");
-            const char* modes[] = { "Free XYZ", "Vertical (Y)", "Normal" };
-            int dm = (int)vertexEditor_.dragMode();
-            if (ImGui::Combo("Drag mode", &dm, modes, 3))
-                vertexEditor_.setDragMode((VertexEditor::DragMode)dm);
-            ImGui::Text("Shortcuts: V=Free, B=Vertical, N=Normal");
-            ImGui::Separator();
-            ImGui::Text("Selection: %d vertex%s",
-                        vertexEditor_.selectionCount(),
-                        vertexEditor_.selectionCount() == 1 ? "" : "es");
-            if (ImGui::Button("Clear selection")) vertexEditor_.clearSelection();
-            ImGui::Separator();
-            ImGui::TextWrapped("Click a vertex to select. Ctrl+click adds to the "
-                               "selection. Drag the gizmo to pull vertices; the "
-                               "brush radius/falloff controls falloff.");
-            ImGui::EndTabItem();
-        }
-
-        // ---- Props tab ----
-        if (ImGui::BeginTabItem("Props")) {
-            if (ImGui::Button("Import glTF / VRM...")) {
-                std::string path = openFileDialog();
-                if (!path.empty()) importModel(path);
-            }
-            ImGui::SameLine();
-            ImGui::SliderFloat("Size", &propTargetSize_, 1.0f, 40.0f, "%.1f");
-
-            ImGui::Separator();
-            ImGui::Text("Tool: %s", toolMode_ == ToolPaint ? "Brush" : "Prop");
-            ImGui::SameLine();
-            if (ImGui::Button(toolMode_ == ToolPaint ? "Switch to Prop" : "Switch to Brush")) {
-                toolMode_ = (toolMode_ == ToolPaint) ? ToolProp : ToolPaint;
-            }
-
-            if (toolMode_ == ToolProp) {
-                ImGui::Text("Gizmo:");
-                ImGui::SameLine();
-                int mode = gizmo_.mode();
-                if (ImGui::RadioButton("Move", mode == Gizmo::Translate)) gizmo_.setMode(Gizmo::Translate);
-                ImGui::SameLine();
-                if (ImGui::RadioButton("Rotate", mode == Gizmo::Rotate)) gizmo_.setMode(Gizmo::Rotate);
-                ImGui::SameLine();
-                if (ImGui::RadioButton("Scale", mode == Gizmo::Scale)) gizmo_.setMode(Gizmo::Scale);
-            }
-
-            ImGui::Separator();
-            ImGui::Text("Placed props: %d", props_.count());
-            ImGui::BeginChild("proplist", ImVec2(0, 120), true);
-            for (const auto& p : props_.props()) {
-                bool sel = (p.id == props_.selectedId());
-                ImGui::PushID(p.id);
-                if (ImGui::Selectable(p.displayName.c_str(), sel)) {
-                    props_.select(p.id);
-                    toolMode_ = ToolProp;
-                }
-                ImGui::PopID();
-            }
-            ImGui::EndChild();
-
-            Prop* sel = props_.selected();
-            if (sel) {
-                ImGui::Separator();
-                ImGui::Text("Selected: %s", sel->displayName.c_str());
-                ImGui::DragFloat3("Position", &sel->position[0], 0.5f);
-                ImGui::SliderFloat("Yaw",   &sel->rotationEuler.y, -3.14159f, 3.14159f, "%.2f");
-                ImGui::SliderFloat("Pitch", &sel->rotationEuler.x, -1.5708f,  1.5708f,  "%.2f");
-                ImGui::SliderFloat("Roll",  &sel->rotationEuler.z, -3.14159f, 3.14159f, "%.2f");
-                float uniformScale = sel->scale.x;
-                if (ImGui::SliderFloat("Scale", &uniformScale, 0.01f, 20.0f, "%.2f", ImGuiSliderFlags_Logarithmic)) {
-                    sel->scale = glm::vec3(uniformScale);
-                }
-                if (ImGui::Button("Snap to ground")) {
-                    float h = terrain_.heightAtWorld(sel->position.x, sel->position.z);
-                    float bottom = sel->model ? sel->model->aabbMin().y : 0.0f;
-                    sel->position.y = h - bottom * sel->scale.y;
-                }
-                ImGui::SameLine();
-                if (ImGui::Button("Duplicate")) {
-                    auto m = sel->model;
-                    int newId = props_.addProp(m, sel->position,
-                                              terrain_.heightAtWorld(sel->position.x, sel->position.z),
-                                              0.0f, sel->displayName + " copy");
-                    if (newId >= 0) {
-                        Prop* np = props_.findProp(newId);
-                        if (np) {
-                            np->rotationEuler = sel->rotationEuler;
-                            np->scale = sel->scale;
-                            np->position.y = sel->position.y;
-                        }
-                    }
-                }
-                ImGui::SameLine();
-                if (ImGui::Button("Delete")) {
-                    props_.removeProp(sel->id);
-                }
-            }
-            ImGui::EndTabItem();
-        }
-
-        // ---- Display tab ----
-        if (ImGui::BeginTabItem("Display")) {
-            ImGui::Checkbox("Wireframe", &wireframe_);
-            ImGui::Checkbox("Show cursor", &showCursor_);
-            ImGui::Checkbox("Show help (H)", &showHelp_);
-            ImGui::ColorEdit3("Cursor color", cursorColor_);
-            ImGui::Separator();
-            ImGui::SliderFloat("Light azimuth",   &lightAzimuth_,   0.0f, 6.28f);
-            ImGui::SliderFloat("Light elevation", &lightElevation_, 0.1f, 1.55f);
-            ImGui::Separator();
-            ImGui::Text("Skybox");
-            ImGui::SliderFloat("Sky exposure", &skyExposure_, 0.0f, 3.0f, "%.2f");
-            if (ImGui::Button("Import sky...")) {
-                std::string p = openFileDialog("Sky image",
-                    "*.hdr;*.png;*.jpg;*.jpeg;*.tga;*.bmp");
-                if (!p.empty()) skybox_.loadEquirect(skyboxConvertShader_, p);
-            }
-            ImGui::SameLine();
-            if (ImGui::Button("Reset to default")) skybox_.resetToDefault();
-            if (skybox_.isDefault()) {
-                ImGui::TextDisabled("Procedural gradient sky");
-            } else {
-                ImGui::TextDisabled("Imported: %s",
-                    std::filesystem::path(skybox_.importedPath()).filename().string().c_str());
-            }
-            ImGui::EndTabItem();
-        }
-
-        // ---- Camera tab ----
-        if (ImGui::BeginTabItem("Camera")) {
-            ImGui::Text("Distance: %.1f", camera_.distance());
-            ImGui::Text("Target: (%.1f, %.1f, %.1f)",
-                        camera_.target().x, camera_.target().y, camera_.target().z);
-            if (ImGui::Button("Reset View")) {
-                camera_ = Camera();
-                camera_.setViewport(fbWidth_, fbHeight_);
-            }
-            ImGui::EndTabItem();
-        }
-
-        ImGui::EndTabBar();
+static void Raise(ImDrawList* dl, ImVec2 p0, ImVec2 p1, ImU32 col) {
+    float cx = (p0.x + p1.x) * 0.5f;
+    float w = (p1.x - p0.x) * 0.18f;
+    dl->AddLine(ImVec2(cx, p1.y - (p1.y - p0.y) * 0.2f),
+                ImVec2(cx, p0.y + (p1.y - p0.y) * 0.2f), col, 3.0f);
+    dl->AddTriangleFilled(
+        ImVec2(cx, p0.y + (p1.y - p0.y) * 0.2f),
+        ImVec2(cx - w, p0.y + (p1.y - p0.y) * 0.2f + w * 1.5f),
+        ImVec2(cx + w, p0.y + (p1.y - p0.y) * 0.2f + w * 1.5f), col);
+}
+static void Lower(ImDrawList* dl, ImVec2 p0, ImVec2 p1, ImU32 col) {
+    float cx = (p0.x + p1.x) * 0.5f;
+    float w = (p1.x - p0.x) * 0.18f;
+    dl->AddLine(ImVec2(cx, p0.y + (p1.y - p0.y) * 0.2f),
+                ImVec2(cx, p1.y - (p1.y - p0.y) * 0.2f), col, 3.0f);
+    dl->AddTriangleFilled(
+        ImVec2(cx, p1.y - (p1.y - p0.y) * 0.2f),
+        ImVec2(cx - w, p1.y - (p1.y - p0.y) * 0.2f - w * 1.5f),
+        ImVec2(cx + w, p1.y - (p1.y - p0.y) * 0.2f - w * 1.5f), col);
+}
+static void Smooth(ImDrawList* dl, ImVec2 p0, ImVec2 p1, ImU32 col) {
+    float x0 = p0.x + (p1.x - p0.x) * 0.2f;
+    float x1 = p1.x - (p1.x - p0.x) * 0.2f;
+    float cy = (p0.y + p1.y) * 0.5f;
+    float amp = (p1.y - p0.y) * 0.18f;
+    for (int i = 0; i < 3; ++i) {
+        float xa = x0 + (x1 - x0) * (i / 3.0f);
+        float xb = x0 + (x1 - x0) * ((i + 1) / 3.0f);
+        ImVec2 a = ImVec2(xa, cy + (i % 2 ? amp : -amp));
+        ImVec2 b = ImVec2(xb, cy + (i % 2 ? -amp : amp));
+        dl->AddLine(a, b, col, 2.5f);
     }
+}
+static void Flatten(ImDrawList* dl, ImVec2 p0, ImVec2 p1, ImU32 col) {
+    float cy = (p0.y + p1.y) * 0.5f;
+    float x0 = p0.x + (p1.x - p0.x) * 0.2f;
+    float x1 = p1.x - (p1.x - p0.x) * 0.2f;
+    dl->AddLine(ImVec2(x0, cy), ImVec2(x1, cy), col, 3.0f);
+    dl->AddLine(ImVec2(x0, cy - 4), ImVec2(x0, cy + 4), col, 2.0f);
+    dl->AddLine(ImVec2(x1, cy - 4), ImVec2(x1, cy + 4), col, 2.0f);
+}
+static void Noise(ImDrawList* dl, ImVec2 p0, ImVec2 p1, ImU32 col) {
+    float x0 = p0.x + (p1.x - p0.x) * 0.2f;
+    float x1 = p1.x - (p1.x - p0.x) * 0.2f;
+    float cy = (p0.y + p1.y) * 0.5f;
+    float amp = (p1.y - p0.y) * 0.18f;
+    ImVec2 pts[5] = {
+        ImVec2(x0, cy),
+        ImVec2(x0 + (x1 - x0) * 0.25f, cy - amp),
+        ImVec2(x0 + (x1 - x0) * 0.5f, cy + amp),
+        ImVec2(x0 + (x1 - x0) * 0.75f, cy - amp),
+        ImVec2(x1, cy),
+    };
+    for (int i = 0; i < 4; ++i) dl->AddLine(pts[i], pts[i + 1], col, 2.5f);
+}
+static void SetHeight(ImDrawList* dl, ImVec2 p0, ImVec2 p1, ImU32 col) {
+    float cy = (p0.y + p1.y) * 0.55f;
+    float x0 = p0.x + (p1.x - p0.x) * 0.2f;
+    float x1 = p1.x - (p1.x - p0.x) * 0.2f;
+    dl->AddLine(ImVec2(x0, cy), ImVec2(x1, cy), col, 3.0f);
+    dl->AddRectFilled(ImVec2(x0 - 4, cy - 4), ImVec2(x0 + 4, cy + 4), col);
+    dl->AddRectFilled(ImVec2(x1 - 4, cy - 4), ImVec2(x1 + 4, cy + 4), col);
+}
+static void Texture(ImDrawList* dl, ImVec2 p0, ImVec2 p1, ImU32 col) {
+    float cx = (p0.x + p1.x) * 0.5f;
+    float cy = (p0.y + p1.y) * 0.5f;
+    float x0 = p0.x + (p1.x - p0.x) * 0.25f;
+    float x1 = p1.x - (p1.x - p0.x) * 0.25f;
+    float y0 = p0.y + (p1.y - p0.y) * 0.25f;
+    float y1 = p1.y - (p1.y - p0.y) * 0.25f;
+    float sw = 1.5f;
+    dl->AddRect(ImVec2(x0, y0), ImVec2(x1, y1), col, 0.0f, 0, sw);
+    dl->AddLine(ImVec2(cx, y0), ImVec2(cx, y1), col, sw);
+    dl->AddLine(ImVec2(x0, cy), ImVec2(x1, cy), col, sw);
+}
+
+static void CatBrush(ImDrawList* dl, ImVec2 p0, ImVec2 p1, ImU32 col) {
+    float x0 = p0.x + (p1.x - p0.x) * 0.25f, x1 = p1.x - (p1.x - p0.x) * 0.25f;
+    float y0 = p0.y + (p1.y - p0.y) * 0.25f, y1 = p1.y - (p1.y - p0.y) * 0.25f;
+    dl->AddLine(ImVec2(x0, y1), ImVec2(x1, y0), col, 4.0f);
+    dl->AddLine(ImVec2(x0 + 4, y1), ImVec2(x1 - 4, y0 - 4), col, 2.0f);
+}
+static void CatVertex(ImDrawList* dl, ImVec2 p0, ImVec2 p1, ImU32 col) {
+    float cx = (p0.x + p1.x) * 0.5f, cy = (p0.y + p1.y) * 0.5f;
+    float r = (p1.x - p0.x) * 0.10f;
+    dl->AddCircleFilled(ImVec2(cx, cy), r, col);
+    float arm = (p1.x - p0.x) * 0.22f;
+    dl->AddLine(ImVec2(cx, cy), ImVec2(cx + arm, cy), col, 2.0f);
+    dl->AddLine(ImVec2(cx, cy), ImVec2(cx - arm * 0.7f, cy + arm * 0.7f), col, 2.0f);
+    dl->AddLine(ImVec2(cx, cy), ImVec2(cx, cy - arm), col, 2.0f);
+}
+static void CatProps(ImDrawList* dl, ImVec2 p0, ImVec2 p1, ImU32 col) {
+    float s = (p1.x - p0.x) * 0.26f;
+    float cx = (p0.x + p1.x) * 0.5f, cy = (p0.y + p1.y) * 0.5f;
+    float off = s * 0.35f;
+    ImVec2 f0(cx - s, cy + s), f1(cx + s, cy + s),
+           f2(cx + s, cy - s), f3(cx - s, cy - s);
+    ImVec2 b0(f0.x + off, f0.y - off), b1(f1.x + off, f1.y - off),
+           b2(f2.x + off, f2.y - off), b3(f3.x + off, f3.y - off);
+    float w = 1.5f;
+    dl->AddQuad(f0, f1, f2, f3, col, w);
+    dl->AddQuad(b0, b1, b2, b3, col, w);
+    dl->AddLine(f0, b0, col, w); dl->AddLine(f1, b1, col, w);
+    dl->AddLine(f2, b2, col, w); dl->AddLine(f3, b3, col, w);
+}
+static void CatTerrain(ImDrawList* dl, ImVec2 p0, ImVec2 p1, ImU32 col) {
+    float x0 = p0.x + (p1.x - p0.x) * 0.2f, x1 = p1.x - (p1.x - p0.x) * 0.2f;
+    float base = p1.y - (p1.y - p0.y) * 0.25f;
+    float h = (p1.y - p0.y) * 0.35f;
+    dl->AddBezierCubic(ImVec2(x0, base), ImVec2(x0 + (x1 - x0) * 0.3f, base - h),
+                       ImVec2(x0 + (x1 - x0) * 0.5f, base - h * 0.3f),
+                       ImVec2(x0 + (x1 - x0) * 0.55f, base - h * 0.2f), col, 2.5f);
+    dl->AddBezierCubic(ImVec2(x0 + (x1 - x0) * 0.55f, base - h * 0.2f),
+                       ImVec2(x0 + (x1 - x0) * 0.8f, base - h * 0.5f),
+                       ImVec2(x1, base), ImVec2(x1, base), col, 2.5f);
+    float sx0 = x0 + (x1 - x0) * 0.05f, sx1 = x0 + (x1 - x0) * 0.5f;
+    dl->AddBezierCubic(ImVec2(sx0, base),
+                       ImVec2(sx0 + (sx1 - sx0) * 0.4f, base - h * 0.5f),
+                       ImVec2(sx0 + (sx1 - sx0) * 0.6f, base - h * 0.5f),
+                       ImVec2(sx1, base), col, 2.5f);
+    dl->AddLine(ImVec2(x0 - 2, base), ImVec2(x1 + 2, base), col, 1.5f);
+}
+static void CatLayers(ImDrawList* dl, ImVec2 p0, ImVec2 p1, ImU32 col) {
+    float w = (p1.x - p0.x) * 0.5f, h = (p1.y - p0.y) * 0.16f;
+    float cx = (p0.x + p1.x) * 0.5f, cy = (p0.y + p1.y) * 0.5f;
+    float off = w * 0.12f;
+    ImVec2 r[] = {
+        ImVec2(cx - w * 0.5f, cy - h * 1.5f),
+        ImVec2(cx + w * 0.5f, cy - h * 0.5f),
+        ImVec2(cx - w * 0.5f + off, cy - h * 0.5f),
+        ImVec2(cx + w * 0.5f + off, cy + h * 0.5f),
+        ImVec2(cx - w * 0.5f + off * 2, cy + h * 0.5f),
+        ImVec2(cx + w * 0.5f + off * 2, cy + h * 1.5f),
+    };
+    for (int i = 0; i < 3; ++i)
+        dl->AddRect(r[i * 2], r[i * 2 + 1], col, 0.0f, 0, 2.0f);
+}
+static void CatEnv(ImDrawList* dl, ImVec2 p0, ImVec2 p1, ImU32 col) {
+    ImVec2 c((p0.x + p1.x) * 0.5f, (p0.y + p1.y) * 0.5f);
+    float r = (p1.x - p0.x) * 0.14f;
+    dl->AddCircleFilled(c, r, col);
+    float rayOut = r * 1.7f, rayIn = r * 1.15f;
+    for (int i = 0; i < 8; ++i) {
+        float a = i * (3.14159265f * 2.0f / 8.0f);
+        float ca = cosf(a), sa = sinf(a);
+        dl->AddLine(ImVec2(c.x + rayIn * ca, c.y + rayIn * sa),
+                    ImVec2(c.x + rayOut * ca, c.y + rayOut * sa), col, 2.0f);
+    }
+}
+static void CatView(ImDrawList* dl, ImVec2 p0, ImVec2 p1, ImU32 col) {
+    ImVec2 c((p0.x + p1.x) * 0.5f, (p0.y + p1.y) * 0.5f);
+    float w = (p1.x - p0.x) * 0.28f, h = (p1.y - p0.y) * 0.16f;
+    dl->AddBezierCubic(ImVec2(c.x - w, c.y), ImVec2(c.x - w * 0.5f, c.y - h),
+                       ImVec2(c.x + w * 0.5f, c.y - h), ImVec2(c.x + w, c.y), col, 2.5f);
+    dl->AddBezierCubic(ImVec2(c.x + w, c.y), ImVec2(c.x + w * 0.5f, c.y + h),
+                       ImVec2(c.x - w * 0.5f, c.y + h), ImVec2(c.x - w, c.y), col, 2.5f);
+    dl->AddCircleFilled(c, h * 0.6f, col);
+}
+
+typedef void (*IconFn)(ImDrawList*, ImVec2, ImVec2, ImU32);
+static IconFn brushIcon(int type) {
+    switch (type) {
+        case Terrain::BrushParams::Raise:    return &Raise;
+        case Terrain::BrushParams::Lower:    return &Lower;
+        case Terrain::BrushParams::Smooth:   return &Smooth;
+        case Terrain::BrushParams::Flatten:  return &Flatten;
+        case Terrain::BrushParams::Noise:    return &Noise;
+        case Terrain::BrushParams::Set:      return &SetHeight;
+        case Terrain::BrushParams::Texture:  return &Texture;
+        default: return nullptr;
+    }
+}
+static IconFn catIcon(int cat) {
+    switch (cat) {
+        case App::CatBrush:    return &CatBrush;
+        case App::CatVertex:   return &CatVertex;
+        case App::CatProps:    return &CatProps;
+        case App::CatTerrain:  return &CatTerrain;
+        case App::CatLayers:   return &CatLayers;
+        case App::CatEnv:      return &CatEnv;
+        case App::CatView:     return &CatView;
+        default: return nullptr;
+    }
+}
+static const char* catName(int cat) {
+    switch (cat) {
+        case App::CatBrush:    return "Brush";
+        case App::CatVertex:   return "Vertex";
+        case App::CatProps:    return "Props";
+        case App::CatTerrain:  return "Terrain";
+        case App::CatLayers:   return "Layers";
+        case App::CatEnv:      return "Environment";
+        case App::CatView:     return "View";
+        default: return "?";
+    }
+}
+
+} // namespace icons
+
+void App::selectCategory(int cat) {
+    if (cat < 0 || cat >= CatCount) return;
+    // Leaving the vertex panel turns wireframe off (it was enabled for vertex
+    // picking); entering it forces wireframe on.
+    if (activeCategory_ == CatVertex && cat != CatVertex) wireframe_ = false;
+    activeCategory_ = cat;
+    if (cat == CatBrush)  toolMode_ = ToolPaint;
+    else if (cat == CatVertex) { toolMode_ = ToolVertex; wireframe_ = true; }
+    else if (cat == CatProps)  toolMode_ = ToolProp;
+}
+
+void App::drawLeftPanel() {
+    const float railW = 46.0f;
+    float panelH = float(std::max(200, fbHeight_ - 80));
+    ImGui::SetNextWindowPos(ImVec2(10, 10), ImGuiCond_FirstUseEver);
+    ImGui::SetNextWindowSize(ImVec2(320, panelH), ImGuiCond_Always);
+    ImGuiWindowFlags wf = ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize |
+                          ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoMove;
+    ImGui::Begin("##leftpanel", nullptr, wf);
+
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    ImGuiStyle& style = ImGui::GetStyle();
+
+    const float cellH = 40.0f;
+    const float cellPad = 3.0f;
+    const float iconPad = 7.0f;
+    const ImVec4 activeBg = style.Colors[ImGuiCol_ButtonHovered];
+    const ImVec4 hoverBg  = style.Colors[ImGuiCol_ButtonHovered];
+    const ImVec4 idleBg   = style.Colors[ImGuiCol_ChildBg];
+
+    auto drawCell = [&](int idx, const char* label, icons::IconFn fn,
+                        ImVec2 p0, ImVec2 p1) {
+        bool active = (activeCategory_ == idx);
+        bool hover = ImGui::IsMouseHoveringRect(p0, p1) &&
+                     ImGui::IsWindowHovered(ImGuiHoveredFlags_AllowWhenBlockedByPopup);
+        ImU32 bg = active ? ImGui::ColorConvertFloat4ToU32(activeBg) :
+                   hover  ? ImGui::ColorConvertFloat4ToU32(hoverBg) :
+                            ImGui::ColorConvertFloat4ToU32(idleBg);
+        if (active || hover) dl->AddRectFilled(p0, p1, bg, 6.0f);
+        ImU32 col = active ? IM_COL32(255, 230, 110, 255) :
+                    hover  ? IM_COL32(255, 255, 255, 255) :
+                            IM_COL32(210, 210, 210, 255);
+        if (fn) fn(dl, ImVec2(p0.x + iconPad, p0.y + iconPad),
+                       ImVec2(p1.x - iconPad, p1.y - iconPad), col);
+        ImGui::SetCursorScreenPos(p0);
+        ImGui::InvisibleButton(label, ImVec2(p1.x - p0.x, p1.y - p0.y));
+        if (hover) ImGui::SetTooltip("%s", label);
+        if (ImGui::IsItemClicked()) selectCategory(idx);
+    };
+
+    // --- Rail (left column, full height) ---
+    ImGui::BeginChild("##rail", ImVec2(railW, 0), true, ImGuiWindowFlags_NoScrollbar);
+    ImVec2 railStart = ImGui::GetCursorScreenPos();
+    int order[CatCount + 1] = { CatBrush, CatVertex, CatProps, -1,
+                                CatTerrain, CatLayers, CatEnv, CatView };
+    ImVec2 cursor = railStart;
+    for (int o = 0; o < CatCount + 1; ++o) {
+        int cat = order[o];
+        ImVec2 p0 = cursor;
+        ImVec2 p1 = ImVec2(p0.x + railW - 2 * cellPad, p0.y + cellH);
+        if (cat < 0) {
+            float dy = p0.y + cellH * 0.5f;
+            dl->AddLine(ImVec2(p0.x + 6, dy), ImVec2(p1.x - 6, dy),
+                        IM_COL32(120, 120, 120, 255), 1.5f);
+        } else {
+            char lbl[16];
+            std::snprintf(lbl, sizeof(lbl), "##cat%d", cat);
+            drawCell(cat, icons::catName(cat), icons::catIcon(cat), p0, p1);
+        }
+        cursor.y += cellH + cellPad;
+    }
+    ImGui::EndChild();
+
+    // --- Content (right column, fills remaining width) ---
+    ImGui::SameLine();
+    ImGui::BeginChild("##content", ImVec2(0, 0), true);
+    switch (activeCategory_) {
+        case CatBrush:   drawBrushContent();  break;
+        case CatVertex:  drawVertexContent(); break;
+        case CatProps:   drawPropsContent();  break;
+        case CatTerrain: drawTerrainContent();break;
+        case CatLayers:  drawLayersContent(); break;
+        case CatEnv:     drawEnvContent();    break;
+        case CatView:    drawViewContent();   break;
+    }
+    ImGui::EndChild();
 
     ImGui::End();
 }
+
+void App::drawBrushBar() {
+    const float cellSize = 44.0f;
+    const float gap = 4.0f;
+    const float pad = 8.0f;
+    const int count = 7;
+    float totalW = float(count) * cellSize + float(count - 1) * gap + 2 * pad;
+    float x = float(fbWidth_) * 0.5f - totalW * 0.5f;
+    float y = float(fbHeight_) - cellSize - 2 * pad - 14.0f;
+
+    ImGui::SetNextWindowPos(ImVec2(x, y), ImGuiCond_Always);
+    ImGui::SetNextWindowSize(ImVec2(totalW, cellSize + 2 * pad), ImGuiCond_Always);
+    ImGuiWindowFlags wf = ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize |
+                          ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoMove |
+                          ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse;
+    ImGui::Begin("##brushbar", nullptr, wf);
+
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    const ImVec4 activeBg = ImGui::GetStyle().Colors[ImGuiCol_ButtonHovered];
+    const ImVec4 idleBg   = ImGui::GetStyle().Colors[ImGuiCol_FrameBg];
+    const ImVec2 wPos = ImGui::GetWindowPos();
+    const float iconPad = 7.0f;
+    const char* names[] = { "Raise", "Lower", "Smooth", "Flatten",
+                            "Noise", "Set Height", "Texture" };
+
+    for (int i = 0; i < count; ++i) {
+        ImVec2 p0 = ImVec2(wPos.x + pad + float(i) * (cellSize + gap),
+                            wPos.y + pad);
+        ImVec2 p1 = ImVec2(p0.x + cellSize, p0.y + cellSize);
+        bool active = (brush_.type == i && toolMode_ == ToolPaint);
+        bool hover = ImGui::IsMouseHoveringRect(p0, p1) &&
+                     ImGui::IsWindowHovered();
+        ImU32 bg = active ? ImGui::ColorConvertFloat4ToU32(activeBg) :
+                   hover  ? ImGui::ColorConvertFloat4ToU32(activeBg) :
+                            ImGui::ColorConvertFloat4ToU32(idleBg);
+        dl->AddRectFilled(p0, p1, bg, 6.0f);
+        ImU32 col = active ? IM_COL32(255, 230, 110, 255) :
+                    hover  ? IM_COL32(255, 255, 255, 255) :
+                             IM_COL32(210, 210, 210, 255);
+        auto fn = icons::brushIcon(i);
+        if (fn) fn(dl, ImVec2(p0.x + iconPad, p0.y + iconPad),
+                       ImVec2(p1.x - iconPad, p1.y - iconPad), col);
+        ImGui::SetCursorScreenPos(p0);
+        char lbl[16];
+        std::snprintf(lbl, sizeof(lbl), "##b%d", i);
+        ImGui::InvisibleButton(lbl, ImVec2(cellSize, cellSize));
+        if (hover) ImGui::SetTooltip("%s", names[i]);
+        if (ImGui::IsItemClicked()) {
+            brush_.type = (Terrain::BrushParams::Type)i;
+            toolMode_ = ToolPaint;
+            activeCategory_ = CatBrush;
+        }
+    }
+    ImGui::End();
+}
+
+// --------------------------------------------------------------------------
+// Content panels (one per rail category).
+// --------------------------------------------------------------------------
+void App::drawBrushContent() {
+    ImGui::TextDisabled("Brush %s", brushTypeName(brush_.type));
+    ImGui::Separator();
+    ImGui::SliderFloat("Radius",   &brush_.radius,   1.0f, terrain_.worldSize() * 0.4f, "%.1f");
+    ImGui::SliderFloat("Strength", &brush_.strength, 0.01f, 5.0f, "%.2f");
+    const char* fnames[] = { "Smooth", "Linear", "Constant" };
+    ImGui::Combo("Falloff", &brush_.falloff, fnames, 3);
+
+    if (brush_.type == Terrain::BrushParams::Flatten ||
+        brush_.type == Terrain::BrushParams::Set) {
+        ImGui::SliderFloat("Target Height", &brush_.target,
+                           -20.0f, 40.0f, "%.1f");
+    }
+    if (brush_.type == Terrain::BrushParams::Texture) {
+        ImGui::Separator();
+        ImGui::Text("Texture layer:");
+        for (int i = 0; i < terrain_.layerCount(); ++i) {
+            bool sel = (brush_.textureLayer == i);
+            const std::string& ln = terrain_.layers()[i].name;
+            if (ImGui::RadioButton(ln.c_str(), sel)) brush_.textureLayer = i;
+            if ((i + 1) % 2 != 0) ImGui::SameLine();
+        }
+        brush_.strength = std::clamp(brush_.strength, 0.01f, 1.0f);
+    }
+    if (brush_.radius != 0.0f) brushCursor_.setShape(brush_.radius);
+}
+
+void App::drawVertexContent() {
+    ImGui::TextDisabled("Vertex editing (wireframe)");
+    ImGui::Separator();
+    const char* modes[] = { "Free XYZ", "Vertical (Y)", "Normal" };
+    int dm = (int)vertexEditor_.dragMode();
+    if (ImGui::Combo("Drag mode", &dm, modes, 3))
+        vertexEditor_.setDragMode((VertexEditor::DragMode)dm);
+    ImGui::Text("Shortcuts: V=Free, B=Vertical, N=Normal");
+    ImGui::Separator();
+    ImGui::Text("Selection: %d vertex%s",
+                vertexEditor_.selectionCount(),
+                vertexEditor_.selectionCount() == 1 ? "" : "es");
+    if (ImGui::Button("Clear selection")) vertexEditor_.clearSelection();
+    ImGui::Separator();
+    // Falloff is shared with the brush tool; expose it here too so the user
+    // does not have to switch categories while vertex editing.
+    ImGui::SliderFloat("Radius",  &brush_.radius, 1.0f, terrain_.worldSize() * 0.4f, "%.1f");
+    const char* fnames[] = { "Smooth", "Linear", "Constant" };
+    ImGui::Combo("Falloff", &brush_.falloff, fnames, 3);
+    if (brush_.radius != 0.0f) brushCursor_.setShape(brush_.radius);
+    ImGui::Separator();
+    ImGui::TextWrapped("Click a vertex to select. Ctrl+click adds to the "
+                       "selection. Drag the gizmo to pull vertices; the "
+                       "radius/falloff controls falloff.");
+}
+
+void App::drawPropsContent() {
+    if (ImGui::Button("Import glTF / VRM...")) {
+        std::string path = openFileDialog();
+        if (!path.empty()) importModel(path);
+    }
+    ImGui::SameLine();
+    ImGui::SliderFloat("Size", &propTargetSize_, 1.0f, 40.0f, "%.1f");
+    ImGui::Separator();
+    ImGui::Text("Gizmo:");
+    ImGui::SameLine();
+    int mode = gizmo_.mode();
+    if (ImGui::RadioButton("Move", mode == Gizmo::Translate)) gizmo_.setMode(Gizmo::Translate);
+    ImGui::SameLine();
+    if (ImGui::RadioButton("Rotate", mode == Gizmo::Rotate)) gizmo_.setMode(Gizmo::Rotate);
+    ImGui::SameLine();
+    if (ImGui::RadioButton("Scale", mode == Gizmo::Scale)) gizmo_.setMode(Gizmo::Scale);
+    ImGui::Separator();
+    ImGui::Text("Placed props: %d", props_.count());
+    ImGui::BeginChild("proplist", ImVec2(0, 120), true);
+    for (const auto& p : props_.props()) {
+        bool sel = (p.id == props_.selectedId());
+        ImGui::PushID(p.id);
+        if (ImGui::Selectable(p.displayName.c_str(), sel)) {
+            props_.select(p.id);
+            toolMode_ = ToolProp;
+        }
+        ImGui::PopID();
+    }
+    ImGui::EndChild();
+
+    Prop* sel = props_.selected();
+    if (sel) {
+        ImGui::Separator();
+        ImGui::Text("Selected: %s", sel->displayName.c_str());
+        ImGui::DragFloat3("Position", &sel->position[0], 0.5f);
+        ImGui::SliderFloat("Yaw",   &sel->rotationEuler.y, -3.14159f, 3.14159f, "%.2f");
+        ImGui::SliderFloat("Pitch", &sel->rotationEuler.x, -1.5708f,  1.5708f,  "%.2f");
+        ImGui::SliderFloat("Roll",  &sel->rotationEuler.z, -3.14159f, 3.14159f, "%.2f");
+        float uniformScale = sel->scale.x;
+        if (ImGui::SliderFloat("Scale", &uniformScale, 0.01f, 20.0f, "%.2f", ImGuiSliderFlags_Logarithmic)) {
+            sel->scale = glm::vec3(uniformScale);
+        }
+        if (ImGui::Button("Snap to ground")) {
+            float h = terrain_.heightAtWorld(sel->position.x, sel->position.z);
+            float bottom = sel->model ? sel->model->aabbMin().y : 0.0f;
+            sel->position.y = h - bottom * sel->scale.y;
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Duplicate")) {
+            auto m = sel->model;
+            int newId = props_.addProp(m, sel->position,
+                                      terrain_.heightAtWorld(sel->position.x, sel->position.z),
+                                      0.0f, sel->displayName + " copy");
+            if (newId >= 0) {
+                Prop* np = props_.findProp(newId);
+                if (np) {
+                    np->rotationEuler = sel->rotationEuler;
+                    np->scale = sel->scale;
+                    np->position.y = sel->position.y;
+                }
+            }
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Delete")) {
+            props_.removeProp(sel->id);
+        }
+    }
+}
+
+void App::drawTerrainContent() {
+    ImGui::TextDisabled("Terrain");
+    ImGui::Separator();
+    ImGui::Text("Grid: %d x %d", terrain_.gridX(), terrain_.gridZ());
+    ImGui::Text("World size: %.0f m", terrain_.worldSize());
+    ImGui::Text("Height range: %.2f .. %.2f", terrain_.minHeight(), terrain_.maxHeight());
+    ImGui::Separator();
+    if (ImGui::Button("Flatten")) terrain_.flatten(0.0f);
+    ImGui::SameLine();
+    if (ImGui::Button("Generate Hills")) terrain_.generateHills();
+}
+
+void App::drawLayersContent() {
+    ImGui::TextDisabled("Texture layers");
+    ImGui::Separator();
+    for (int i = 0; i < terrain_.layerCount(); ++i) {
+        const auto& l = terrain_.layers()[i];
+        ImGui::PushID(i);
+        ImGui::Text("%d: %s", i, l.name.c_str());
+        if (l.albedo) {
+            ImGui::SameLine();
+            ImGui::Image((ImTextureID)(intptr_t)l.albedo, ImVec2(48, 48));
+        }
+        if (ImGui::Button("Albedo...")) {
+            std::string p = openFileDialog("Image", "*.png;*.jpg;*.jpeg;*.tga;*.bmp");
+            if (!p.empty()) terrain_.loadLayerAlbedo(i, p);
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Normal...")) {
+            std::string p = openFileDialog("Image", "*.png;*.jpg;*.jpeg;*.tga;*.bmp");
+            if (!p.empty()) terrain_.loadLayerNormal(i, p);
+        }
+        float ts = l.tileSize;
+        if (ImGui::SliderFloat("Tile size", &ts, 0.5f, 64.0f, "%.1f"))
+            terrain_.setLayerTileSize(i, ts);
+        ImGui::PopID();
+        ImGui::Separator();
+    }
+    if (ImGui::Button("Reset Splat")) terrain_.resetSplat();
+}
+
+void App::drawEnvContent() {
+    ImGui::TextDisabled("Environment");
+    ImGui::Separator();
+    ImGui::Text("Light");
+    ImGui::SliderFloat("Light azimuth",   &lightAzimuth_,   0.0f, 6.28f);
+    ImGui::SliderFloat("Light elevation", &lightElevation_, 0.1f, 1.55f);
+    ImGui::Separator();
+    ImGui::Text("Skybox");
+    ImGui::SliderFloat("Sky exposure", &skyExposure_, 0.0f, 3.0f, "%.2f");
+    if (ImGui::Button("Import sky...")) {
+        std::string p = openFileDialog("Sky image",
+            "*.hdr;*.png;*.jpg;*.jpeg;*.tga;*.bmp");
+        if (!p.empty()) skybox_.loadEquirect(skyboxConvertShader_, p);
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Reset to default")) skybox_.resetToDefault();
+    if (skybox_.isDefault()) {
+        ImGui::TextDisabled("Procedural gradient sky");
+    } else {
+        ImGui::TextDisabled("Imported: %s",
+            std::filesystem::path(skybox_.importedPath()).filename().string().c_str());
+    }
+}
+
+void App::drawViewContent() {
+    ImGui::TextDisabled("View");
+    ImGui::Separator();
+    ImGui::Checkbox("Wireframe", &wireframe_);
+    ImGui::Checkbox("Show cursor", &showCursor_);
+    ImGui::Checkbox("Show help (H)", &showHelp_);
+    ImGui::ColorEdit3("Cursor color", cursorColor_);
+    ImGui::Separator();
+    ImGui::Text("Camera");
+    ImGui::Text("Distance: %.1f", camera_.distance());
+    ImGui::Text("Target: (%.1f, %.1f, %.1f)",
+                camera_.target().x, camera_.target().y, camera_.target().z);
+    if (ImGui::Button("Reset View")) {
+        camera_ = Camera();
+        camera_.setViewport(fbWidth_, fbHeight_);
+    }
+}
+
 
 void App::drawHelpOverlay() {
     ImGui::SetNextWindowPos(ImVec2(float(fbWidth_) - 290, 10),
@@ -720,6 +1052,8 @@ void App::drawHelpOverlay() {
                  ImGuiWindowFlags_NoResize | ImGuiWindowFlags_AlwaysAutoResize |
                  ImGuiWindowFlags_NoCollapse);
     ImGui::TextUnformatted("Controls:");
+    ImGui::BulletText("Left rail: pick tool / settings panel");
+    ImGui::BulletText("Bottom bar: pick a brush (switches to Brush mode)");
     ImGui::BulletText("Tab: cycle Brush / Prop / Vertex tool");
     ImGui::BulletText("Right-drag: orbit camera");
     ImGui::BulletText("Middle-drag: pan camera");
