@@ -160,28 +160,32 @@ extension:
 │   └── skybox*.vert/.frag     # Skybox draw + equirect→cubemap conversion
 ├── assets/                   # (gitignored) sample HDR sky & VRM model
 └── src/
-    ├── main.cpp              # Entry point (passes CLI args to App)
-    ├── app.{cpp,h}           # Core loop, init/shutdown, input dispatch, render
-    ├── app_ui.cpp            # ImGui frame, left rail, brush bar, help overlay
-    ├── app_panels.cpp        # One draw*Content() panel per rail category
-    ├── ui_icons.{cpp,h}      # ImDrawList vector icons (brushes, categories)
-    ├── ui_common.h           # Shared UI name helpers
-    ├── camera.{cpp,h}        # Orbit camera with ray casting
-    ├── terrain.{cpp,h}       # Heightfield, brushes, splat layers, raycast
-    ├── noise.h               # Header-only procedural noise (Perlin/Simplex/…)
-    ├── model.{cpp,h}         # glTF/VRM loader (cgltf), skinning, instancing
-    ├── prop.{cpp,h}          # Placed prop instances + selection
-    ├── gizmo.{cpp,h}         # Translate/Rotate/Scale manipulator
-    ├── detail.{cpp,h}        # Instanced vegetation system
-    ├── build.{cpp,h}         # Snap-based block building + face textures
-    ├── vertex_edit.{cpp,h}   # Vertex-level terrain editing gizmo
-    ├── skybox.{cpp,h}        # Cubemap skybox + HDR equirect import
-    ├── scene.{cpp,h}         # .scene save/load (JSON + binary; format in scene.h)
-    ├── file_dialog.{cpp,h}   # Native open/save file dialogs (Win32, UTF-8)
-    ├── sys_util.{cpp,h}      # UTF-8 file IO (wide Win32 APIs on Windows)
-    ├── brush.{cpp,h}         # Brush cursor ring rendering
-    ├── shader.{cpp,h}        # Shader loading and uniform helpers
-    └── input.{cpp,h}         # Centralized GLFW input state
+    ├── editor/
+    │   ├── main.cpp              # Entry point
+    │   ├── app.{cpp,h}           # Core loop, init/shutdown, input dispatch, render
+    │   ├── app_ui.cpp            # ImGui frame, left rail, brush bar, help overlay
+    │   ├── app_panels.cpp        # One draw*Content() panel per rail category
+    │   ├── ui_icons.{cpp,h}      # ImDrawList vector icons (brushes, categories)
+    │   └── ui_common.h           # Shared UI name helpers
+    ├── scene/
+    │   ├── terrain.{cpp,h}       # Heightfield, brushes, splat layers
+    │   ├── model.{cpp,h}         # glTF/VRM loader (cgltf), skinning
+    │   ├── prop.{cpp,h}          # Placed prop instances + selection
+    │   ├── detail.{cpp,h}        # Instanced vegetation system
+    │   ├── build.{cpp,h}         # Snap-based block building + face textures
+    │   ├── skybox.{cpp,h}        # Cubemap skybox + HDR equirect import
+    │   ├── gizmo.{cpp,h}         # Translate/Rotate/Scale manipulator
+    │   ├── vertex_edit.{cpp,h}   # Vertex-level terrain editing gizmo
+    │   ├── brush.{cpp,h}         # Brush cursor ring rendering
+    │   └── scene.{cpp,h}         # .scene save/load (format specification)
+    └── platform/
+        ├── camera.{cpp,h}        # Orbit camera with ray casting
+        ├── input.{cpp,h}         # Centralized GLFW input state
+        ├── shader.{cpp,h}        # Shader loading and uniform helpers
+        ├── sys_util.{cpp,h}      # UTF-8 file IO (wide Win32 APIs on Windows)
+        ├── file_dialog.{cpp,h}   # Native open/save file dialogs (Win32, UTF-8)
+        ├── noise.h               # Header-only procedural noise (Perlin/Simplex/…)
+        └── stb_image_impl.cpp    # stb_image implementation unit
 ```
 
 ## Architecture Notes

@@ -103,7 +103,7 @@ target_link_libraries(dear_imgui PUBLIC glfw glad)
 # stb_image (texture loading, single header from the stb FetchContent)
 # ---------------------------------------------------------------------------
 add_library(stb_image STATIC
-    ${CMAKE_SOURCE_DIR}/src/stb_image_impl.cpp)
+    ${CMAKE_SOURCE_DIR}/src/platform/stb_image_impl.cpp)
 target_include_directories(stb_image PUBLIC ${stb_SOURCE_DIR})
 target_link_libraries(stb_image PUBLIC glad)
 
@@ -115,50 +115,55 @@ target_include_directories(cgltf INTERFACE ${cgltf_SOURCE_DIR})
 # Main application
 # ---------------------------------------------------------------------------
 set(SOURCES
-    src/main.cpp
-    src/app.cpp
-    src/app.h
-    src/app_ui.cpp
-    src/app_panels.cpp
-    src/ui_icons.cpp
-    src/ui_icons.h
-    src/ui_common.h
-    src/camera.cpp
-    src/camera.h
-    src/shader.cpp
-    src/shader.h
-    src/terrain.cpp
-    src/terrain.h
-    src/brush.cpp
-    src/brush.h
-    src/input.cpp
-    src/input.h
-    src/model.cpp
-    src/model.h
-    src/prop.cpp
-    src/prop.h
-    src/gizmo.cpp
-    src/gizmo.h
-    src/file_dialog.cpp
-    src/file_dialog.h
-    src/skybox.cpp
-    src/skybox.h
-    src/vertex_edit.cpp
-    src/vertex_edit.h
-    src/detail.cpp
-    src/detail.h
-    src/build.cpp
-    src/build.h
-    src/scene.cpp
-    src/scene.h
-    src/sys_util.cpp
-    src/sys_util.h
+    src/editor/main.cpp
+    src/editor/app.cpp
+    src/editor/app.h
+    src/editor/app_ui.cpp
+    src/editor/app_panels.cpp
+    src/editor/ui_icons.cpp
+    src/editor/ui_icons.h
+    src/editor/ui_common.h
+    src/scene/terrain.cpp
+    src/scene/terrain.h
+    src/scene/brush.cpp
+    src/scene/brush.h
+    src/scene/vertex_edit.cpp
+    src/scene/vertex_edit.h
+    src/scene/model.cpp
+    src/scene/model.h
+    src/scene/prop.cpp
+    src/scene/prop.h
+    src/scene/detail.cpp
+    src/scene/detail.h
+    src/scene/build.cpp
+    src/scene/build.h
+    src/scene/skybox.cpp
+    src/scene/skybox.h
+    src/scene/gizmo.cpp
+    src/scene/gizmo.h
+    src/scene/scene.cpp
+    src/scene/scene.h
+    src/platform/camera.cpp
+    src/platform/camera.h
+    src/platform/shader.cpp
+    src/platform/shader.h
+    src/platform/input.cpp
+    src/platform/input.h
+    src/platform/file_dialog.cpp
+    src/platform/file_dialog.h
+    src/platform/sys_util.cpp
+    src/platform/sys_util.h
 )
 
 add_executable(scene_editor ${SOURCES})
 target_link_libraries(scene_editor PRIVATE
     glfw glad dear_imgui glm stb_image cgltf)
-target_include_directories(scene_editor PRIVATE ${CMAKE_SOURCE_DIR}/src)
+target_include_directories(scene_editor PRIVATE
+    ${CMAKE_SOURCE_DIR}/src
+    ${CMAKE_SOURCE_DIR}/src/editor
+    ${CMAKE_SOURCE_DIR}/src/scene
+    ${CMAKE_SOURCE_DIR}/src/platform
+)
 # Prevent GLFW from pulling in the system GL header; glad provides GL.
 target_compile_definitions(scene_editor PRIVATE
     GLFW_INCLUDE_NONE

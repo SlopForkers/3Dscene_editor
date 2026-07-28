@@ -30,37 +30,45 @@ cmake --build build --config Release
 Layered by responsibility; lower layers know nothing about the editor:
 
 ```
-main.cpp
-  └─ App (application shell — owns everything below)
-       ├─ core loop & lifecycle ...... src/app.cpp
-       │    (initWindow/initOpenGL/initImGui/shutdown/run,
-       │     handleInput/tool dispatch, renderScene, importModel)
-       ├─ UI shell ................... src/app_ui.cpp
-       │    (ImGui frame, left rail, brush bar, help overlay)
-       ├─ UI panels .................. src/app_panels.cpp
-       │    (one draw*Content() per rail category)
-       ├─ icons / UI helpers ......... src/ui_icons.*, src/ui_common.h
-       ├─ scene save/load ............ src/scene.cpp (format: src/scene.h)
-       └─ subsystems (one class each):
-            Camera ................... orbit camera + screenToRay
-            Input .................... GLFW callbacks → per-frame state
-            Terrain .................. heightfield, brushes, splat layers
-            VertexEditor ............. per-vertex terrain editing gizmo
-            Model / PropManager ...... glTF load (cgltf) + placed props
-            Gizmo .................... translate/rotate/scale manipulator
-            DetailSystem ............. instanced vegetation
-            BuildSystem .............. snap-based blocks + face textures
-            Skybox ................... cubemap sky + equirect→cubemap
-            Shader ................... program + cached uniform locations
-            BrushCursor .............. on-terrain brush ring
-            sys_util ................. UTF-8 file IO (Win32-wide fopen)
-            file_dialog .............. native open/save dialogs (Win32)
+src/
+ ├─ editor/
+ │   ├─ main.cpp ................. entry point
+ │   ├─ app.cpp / app.h .......... core loop, init/shutdown, input, render
+ │   ├─ app_ui.cpp ............... ImGui frame, left rail, brush bar, help
+ │   ├─ app_panels.cpp ........... one draw*Content() per rail category
+ │   ├─ ui_icons.cpp/h ........... ImDrawList vector icons
+ │   └─ ui_common.h .............. shared UI name helpers
+ ├─ scene/ (subsystems – no UI knowledge)
+ │   ├─ terrain.cpp/h ............ heightfield, brushes, splat layers
+ │   ├─ brush.cpp/h .............. on-terrain brush ring cursor
+ │   ├─ vertex_edit.cpp/h ........ per-vertex terrain editing gizmo
+ │   ├─ model.cpp/h .............. glTF/VRM loader (cgltf), skinning
+ │   ├─ prop.cpp/h ............... placed prop instances + selection
+ │   ├─ detail.cpp/h ............. instanced vegetation
+ │   ├─ build.cpp/h .............. snap-based blocks + face textures
+ │   ├─ skybox.cpp/h ............. cubemap sky + equirect→cubemap
+ │   ├─ gizmo.cpp/h .............. translate/rotate/scale manipulator
+ │   └─ scene.cpp/h .............. .scene save/load (format: scene.h)
+ └─ platform/ (foundation – zero editor dependencies)
+     ├─ camera.cpp/h ............. orbit camera + screenToRay
+     ├─ input.cpp/h .............. GLFW callbacks → per-frame state
+     ├─ shader.cpp/h ............. GL program + cached uniform locations
+     ├─ sys_util.cpp/h ........... UTF-8 file IO (Win32-wide fopen)
+     ├─ file_dialog.cpp/h ........ native open/save dialogs (Win32)
+     ├─ noise.h .................. procedural noise (Perlin/Simplex/…)
+     └─ stb_image_impl.cpp ....... stb_image implementation unit
 ```
 
 **App is a single class split across four translation units**
-(`app.cpp`, `app_ui.cpp`, `app_panels.cpp`, plus `scene.cpp` for
-serialization). New editor features usually mean: a subsystem class + a
-`draw*Content()` panel + wiring in `App::handleInput` / `renderScene`.
+(`editor/app.cpp`, `editor/app_ui.cpp`, `editor/app_panels.cpp`, plus
+`scene/scene.cpp` for serialization). New editor features usually mean:
+a subsystem class in `scene/` + a `draw*Content()` panel in `editor/` +
+wiring in `App::handleInput` / `renderScene`.
+
+**Include resolution**: CMake adds `src/editor`, `src/scene`, and
+`src/platform` to the include path, so all headers are included by short
+name (`#include "model.h"`) regardless of which subdirectory the includer
+lives in.
 
 ### Data flow per frame
 
@@ -108,7 +116,7 @@ serialization). New editor features usually mean: a subsystem class + a
 ### .scene format
 
 Single binary file: `"SCNE"` magic + version + JSON metadata + heights blob
-+ splat blob. The authoritative description is the comment in `src/scene.h`.
++ splat blob. The authoritative description is the comment in `src/scene/scene.h`.
 
 ## Common tasks
 
