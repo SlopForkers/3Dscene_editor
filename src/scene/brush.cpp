@@ -43,8 +43,8 @@ void BrushCursor::setShape(float radius, int segments) {
                  verts.data(), GL_STATIC_DRAW);
 }
 
-void BrushCursor::draw(const glm::mat4& viewProj, const glm::vec3& worldPos,
-                       const glm::vec3& color, bool filled, float strength) const {
+void BrushCursor::draw(const glm::mat4& /*viewProj*/, const glm::vec3& worldPos,
+                       const glm::vec3& /*color*/, bool filled, float strength) const {
     if (!vao_) return;
     // Translate the ring to worldPos; model matrix is pure translation.
     glm::mat4 model(1.0f);

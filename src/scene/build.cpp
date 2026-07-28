@@ -297,7 +297,7 @@ int BuildSystem::fillWallLine(float startCoord, float endCoord,
     glm::vec3 size = alongX
         ? glm::vec3(blockW_, blockH_, wallThickness_)
         : glm::vec3(wallThickness_, blockH_, blockW_);
-    float halfThin = wallThickness_ * 0.5f;
+    (void)wallThickness_;
     float topTol = 0.05f;
 
     for (float c = snapToGrid(startCoord); c <= endCoord + 1e-4f; c += gridStep_) {

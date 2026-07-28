@@ -1,0 +1,59 @@
+BasedOnStyle: Google
+IndentWidth: 4
+TabWidth: 4
+UseTab: Never
+ColumnLimit: 120
+
+# Braces: K&R — opening brace on same line for functions and control flow.
+BreakBeforeBraces: Custom
+BraceWrapping:
+  AfterFunction: false
+  AfterControlStatement: Never
+  AfterEnum: false
+  AfterStruct: false
+  AfterClass: false
+  BeforeCatch: false
+  BeforeElse: false
+  BeforeLambdaBody: false
+
+# Pointer/reference alignment: attach to type (int* p, int& r).
+PointerAlignment: Left
+ReferenceAlignment: Pointer
+
+# Short functions (accessors, simple constructors) stay on one line.
+AllowShortFunctionsOnASingleLine: None
+AllowShortLambdasOnASingleLine: Empty
+AllowShortIfStatementsOnASingleLine: Never
+AllowShortLoopsOnASingleLine: false
+
+# Sorting & grouping.
+SortIncludes: Never
+IncludeBlocks: Preserve
+
+# Spacing.
+SpaceBeforeParens: ControlStatementsExceptControlMacros
+SpaceAfterLogicalNot: false
+SpacesInAngles: Never
+SpaceBeforeAssignmentOperators: true
+
+# Alignment.
+AlignAfterOpenBracket: Align
+AlignConsecutiveAssignments: false
+AlignConsecutiveDeclarations: false
+AlignOperands: true
+
+# Trailing commas & comments.
+AllowAllParametersOfDeclarationOnNextLine: true
+AllowAllArgumentsOnNextLine: true
+BinPackArguments: true
+BinPackParameters: true
+
+# Macros.
+IndentPPDirectives: None
+
+# Namespaces.
+NamespaceIndentation: None
+
+# C++11 features.
+DerivePointerAlignment: false
+Standard: c++20

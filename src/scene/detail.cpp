@@ -142,7 +142,7 @@ void DetailSystem::reproject(const Terrain& terrain, const glm::vec3& center,
 }
 
 glm::mat4 DetailSystem::instanceMatrix(const Instance& inst,
-                                       const Prototype& proto) const {
+                                       const Prototype& /*proto*/) const {
     glm::mat4 m(1.0f);
     m = glm::translate(m, inst.position);
     m = glm::rotate(m, inst.yaw, glm::vec3(0, 1, 0));

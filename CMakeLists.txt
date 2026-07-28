@@ -1,11 +1,7 @@
 cmake_minimum_required(VERSION 3.20)
 project(scene_editor LANGUAGES C CXX)
 
-# glm is treated as header-only (we only download it), which still uses the
-# older FetchContent_Populate; keep that working without a deprecation error.
-cmake_policy(SET CMP0169 OLD)
-
-set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_STANDARD_REQUIRED ON)
@@ -25,7 +21,7 @@ set(FETCHCONTENT_QUIET OFF)
 FetchContent_Declare(
     glfw
     GIT_REPOSITORY https://github.com/glfw/glfw.git
-    GIT_TAG        3.3.9
+    GIT_TAG        3.4
     GIT_SHALLOW    TRUE
 )
 set(GLFW_BUILD_DOCS OFF CACHE BOOL "" FORCE)
@@ -34,13 +30,11 @@ set(GLFW_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
 set(GLFW_INSTALL OFF CACHE BOOL "" FORCE)
 FetchContent_MakeAvailable(glfw)
 
-# glm (header only math library). We only download the source and use its
-# include directory; we deliberately do NOT configure its CMakeLists so we
-# sidestep its old cmake_minimum_required that conflicts with CMake 4.x.
+# glm (header-only math library, version 1.0.3)
 FetchContent_Declare(
     glm
     GIT_REPOSITORY https://github.com/g-truc/glm.git
-    GIT_TAG        0.9.9.8
+    GIT_TAG        1.0.3
     GIT_SHALLOW    TRUE
 )
 FetchContent_GetProperties(glm)
@@ -48,7 +42,7 @@ if(NOT glm_POPULATED)
     FetchContent_Populate(glm)
 endif()
 add_library(glm INTERFACE)
-target_include_directories(glm INTERFACE ${glm_SOURCE_DIR})
+target_include_directories(glm SYSTEM INTERFACE ${glm_SOURCE_DIR})
 
 # Dear ImGui
 FetchContent_Declare(
@@ -72,7 +66,7 @@ FetchContent_MakeAvailable(cgltf)
 FetchContent_Declare(
     stb
     GIT_REPOSITORY https://github.com/nothings/stb.git
-    GIT_TAG        master
+    GIT_TAG        31c1ad37456438565541f4919958214b6e762fb4
     GIT_SHALLOW    TRUE
 )
 FetchContent_MakeAvailable(stb)
@@ -81,7 +75,7 @@ FetchContent_MakeAvailable(stb)
 # GLAD2 loader (pre-generated, see external/glad)
 # ---------------------------------------------------------------------------
 add_library(glad STATIC ${CMAKE_SOURCE_DIR}/external/glad/src/gl.c)
-target_include_directories(glad PUBLIC ${CMAKE_SOURCE_DIR}/external/glad/include)
+target_include_directories(glad SYSTEM PUBLIC ${CMAKE_SOURCE_DIR}/external/glad/include)
 
 # ---------------------------------------------------------------------------
 # ImGui library (sources selected manually, no upstream CMake)
@@ -96,7 +90,7 @@ add_library(dear_imgui STATIC
     ${IMGUI_DIR}/backends/imgui_impl_glfw.cpp
     ${IMGUI_DIR}/backends/imgui_impl_opengl3.cpp
 )
-target_include_directories(dear_imgui PUBLIC ${IMGUI_DIR} ${IMGUI_DIR}/backends)
+target_include_directories(dear_imgui SYSTEM PUBLIC ${IMGUI_DIR} ${IMGUI_DIR}/backends)
 target_link_libraries(dear_imgui PUBLIC glfw glad)
 
 # ---------------------------------------------------------------------------
@@ -104,12 +98,12 @@ target_link_libraries(dear_imgui PUBLIC glfw glad)
 # ---------------------------------------------------------------------------
 add_library(stb_image STATIC
     ${CMAKE_SOURCE_DIR}/src/platform/stb_image_impl.cpp)
-target_include_directories(stb_image PUBLIC ${stb_SOURCE_DIR})
+target_include_directories(stb_image SYSTEM PUBLIC ${stb_SOURCE_DIR})
 target_link_libraries(stb_image PUBLIC glad)
 
 # cgltf (header only; implementation compiled in the app)
 add_library(cgltf INTERFACE)
-target_include_directories(cgltf INTERFACE ${cgltf_SOURCE_DIR})
+target_include_directories(cgltf SYSTEM INTERFACE ${cgltf_SOURCE_DIR})
 
 # ---------------------------------------------------------------------------
 # Main application
@@ -170,6 +164,9 @@ target_compile_definitions(scene_editor PRIVATE
     CGLTF_WRITE_UNCOMPRESSED_BINARY
 )
 
+# Enable strict warnings on our code (dependencies are SYSTEM-included above).
+target_compile_options(scene_editor PRIVATE -Wall -Wextra -Wpedantic)
+
 # Win32 common dialogs for the open-file dialog.
 if(WIN32)
     target_link_libraries(scene_editor PRIVATE comdlg32)
@@ -180,3 +177,32 @@ add_custom_command(TARGET scene_editor POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy_directory
             ${CMAKE_SOURCE_DIR}/shaders
             $<TARGET_FILE_DIR:scene_editor>/shaders)
+
+# ---------------------------------------------------------------------------
+# Unit tests (doctest)
+# ---------------------------------------------------------------------------
+option(BUILD_TESTS "Build unit tests" ON)
+if(BUILD_TESTS)
+    FetchContent_Declare(
+        doctest
+        GIT_REPOSITORY https://github.com/doctest/doctest.git
+        GIT_TAG        v2.4.11
+        GIT_SHALLOW    TRUE
+    )
+    FetchContent_GetProperties(doctest)
+    if(NOT doctest_POPULATED)
+        FetchContent_Populate(doctest)
+    endif()
+
+    add_executable(tests
+        tests/test_main.cpp
+        tests/test_noise.cpp
+    )
+    target_include_directories(tests PRIVATE
+        ${CMAKE_SOURCE_DIR}/src
+        ${CMAKE_SOURCE_DIR}/src/platform
+        ${doctest_SOURCE_DIR}
+    )
+    target_link_libraries(tests PRIVATE glm)
+    target_compile_options(tests PRIVATE -Wall -Wextra -Wpedantic)
+endif()

@@ -429,6 +429,7 @@ void Terrain::generateNoise(const Noise::Params& p) {
                 case Noise::Multiply: h *= n; break;
                 case Noise::Min:      h = std::min(h, n); break;
                 case Noise::Max:      h = std::max(h, n); break;
+                case Noise::BlendCount: break;
             }
         }
     }

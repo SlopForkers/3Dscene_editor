@@ -958,7 +958,7 @@ void App::drawSelectionBox() {
 
     glm::vec3 mn, mx;
     p->worldAabb(mn, mx);
-    glm::vec3 center = (mn + mx) * 0.5f;
+    (void)mn; (void)mx;  // mn/mx used in scale matrix below, center unused
     glm::vec3 size = mx - mn;
 
     // Scale the unit cube [0..1]^3 to the world AABB box.
