@@ -341,17 +341,30 @@ int BuildSystem::fillWallLine(float startCoord, float endCoord,
     return placed;
 }
 
-int BuildSystem::eraseRect(float x0, float z0, float x1, float z1) {
+int BuildSystem::eraseRect(float x0, float z0, float x1, float z1,
+                           std::vector<Block>* removed) {
     if (x1 < x0) std::swap(x0, x1);
     if (z1 < z0) std::swap(z0, z1);
     float tol = gridStep_ * 0.5f;
+    auto inRect = [&](const Block& b) {
+        return b.position.x >= x0 - tol && b.position.x <= x1 + tol &&
+               b.position.z >= z0 - tol && b.position.z <= z1 + tol;
+    };
+    if (removed) {
+        removed->clear();
+        for (const auto& b : blocks_)
+            if (inRect(b)) removed->push_back(b);
+    }
     int before = (int)blocks_.size();
-    blocks_.erase(std::remove_if(blocks_.begin(), blocks_.end(),
-        [&](const Block& b) {
-            return b.position.x >= x0 - tol && b.position.x <= x1 + tol &&
-                   b.position.z >= z0 - tol && b.position.z <= z1 + tol;
-        }), blocks_.end());
+    blocks_.erase(std::remove_if(blocks_.begin(), blocks_.end(), inRect),
+                  blocks_.end());
     return before - (int)blocks_.size();
+}
+
+int BuildSystem::placeBlockWithId(const Block& b) {
+    blocks_.push_back(b);
+    if (b.id >= nextId_) nextId_ = b.id + 1;
+    return b.id;
 }
 
 int BuildSystem::placeBlock(const glm::vec3& center, const glm::vec3& size,

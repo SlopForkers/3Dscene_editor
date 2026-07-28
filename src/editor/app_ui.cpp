@@ -145,7 +145,7 @@ void App::drawLeftPanel() {
     int order[CatCount + 2] = { CatBrush, CatVertex, CatProps, CatVegetation,
                                  CatBuild, -1,
                                  CatTerrain, CatNoise, CatLayers, CatEnv, CatView, -1,
-                                 CatFile };
+                                 CatHistory, CatFile };
     ImVec2 cursor = railStart;
     for (int o = 0; o < CatCount + 2; ++o) {
         int cat = order[o];
@@ -176,6 +176,7 @@ void App::drawLeftPanel() {
         case CatLayers:     drawLayersContent();      break;
         case CatEnv:        drawEnvContent();         break;
         case CatView:       drawViewContent();        break;
+        case CatHistory:    drawHistoryContent();     break;
         case CatFile:       drawFileContent();        break;
     }
     ImGui::EndChild();

@@ -1,5 +1,7 @@
 #pragma once
 #include <glm/glm.hpp>
+#include <memory>
+#include "commands.h"
 
 struct ImGuiIO;
 class App;
@@ -17,18 +19,39 @@ struct TerrainTool final : ITool {
     void drawPanelContent(App& app) override;
 
     bool painting_ = false;
+
+private:
+    void beginStroke(App& app);
+    void endStroke(App& app);
+
+    // In-progress stroke capture (one command per drag, pushed on release).
+    std::unique_ptr<TerrainHeightsCommand> heightsCmd_;
+    std::unique_ptr<TerrainSplatCommand>   splatCmd_;
+    std::unique_ptr<DetailPaintCommand>    detailCmd_;
 };
 
 struct PropTool final : ITool {
     bool handleInput(App& app, float dt, const ImGuiIO& io, bool overUI, bool typing) override;
     void cancelDrag() override;
     void drawPanelContent(App& app) override;
+
+private:
+    // Gizmo drag tracking for undo (transform captured at drag start).
+    bool gizmoWasDragging_ = false;
+    int  dragPropId_ = -1;
+    glm::vec3 dragStartPos_   = glm::vec3(0.0f);
+    glm::vec3 dragStartRot_   = glm::vec3(0.0f);
+    glm::vec3 dragStartScale_ = glm::vec3(1.0f);
 };
 
 struct VertexTool final : ITool {
     bool handleInput(App& app, float dt, const ImGuiIO& io, bool overUI, bool typing) override;
     void cancelDrag() override;
     void drawPanelContent(App& app) override;
+
+private:
+    bool wasDragging_ = false;
+    std::unique_ptr<TerrainHeightsCommand> cmd_;
 };
 
 struct BuildTool final : ITool {

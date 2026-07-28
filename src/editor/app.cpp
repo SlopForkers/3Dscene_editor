@@ -322,6 +322,23 @@ int App::run(const std::vector<std::string>& importArgs) {
     return 0;
 }
 
+void App::undoEdit() {
+    if (!history_.undo()) return;
+    // Selections may point at objects the undo just removed — reset them.
+    selectedBlockId_ = -1;
+    selectedBlockFace_ = -1;
+    if (props_.selectedId() >= 0 && !props_.findProp(props_.selectedId()))
+        props_.select(-1);
+}
+
+void App::redoEdit() {
+    if (!history_.redo()) return;
+    selectedBlockId_ = -1;
+    selectedBlockFace_ = -1;
+    if (props_.selectedId() >= 0 && !props_.findProp(props_.selectedId()))
+        props_.select(-1);
+}
+
 void App::importModel(const std::string& path) {
     auto model = std::make_shared<Model>();
     if (!model->loadFromFile(path)) {
@@ -442,6 +459,17 @@ void App::handleInput(float dt) {
         if (g_input.keyPressed(GLFW_KEY_8)) brush_.type = Terrain::BrushParams::Vegetation;
         if (g_input.keyPressed(GLFW_KEY_F)) wireframe_ = !wireframe_;
         if (g_input.keyPressed(GLFW_KEY_H)) showHelp_ = !showHelp_;
+
+        // Undo/redo. Ctrl+Z undoes, Ctrl+Shift+Z or Ctrl+Y redoes.
+        bool ctrl = g_input.keyDown(GLFW_KEY_LEFT_CONTROL) ||
+                    g_input.keyDown(GLFW_KEY_RIGHT_CONTROL);
+        bool shift = g_input.keyDown(GLFW_KEY_LEFT_SHIFT) ||
+                     g_input.keyDown(GLFW_KEY_RIGHT_SHIFT);
+        if (ctrl && g_input.keyPressed(GLFW_KEY_Z)) {
+            if (shift) redoEdit();
+            else undoEdit();
+        }
+        if (ctrl && g_input.keyPressed(GLFW_KEY_Y)) redoEdit();
 
         if (toolMode_ == ToolProp) {
             if (g_input.keyPressed(GLFW_KEY_T)) gizmo_.setMode(Gizmo::Translate);

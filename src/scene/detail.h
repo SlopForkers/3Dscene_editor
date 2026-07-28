@@ -56,6 +56,8 @@ public:
     int  instanceCount() const { return (int)instances_.size(); }
     const std::vector<Instance>& instances() const { return instances_; }
     void addInstance(const Instance& inst) { instances_.push_back(inst); }
+    // Drop instances from the tail (undo of a paint stroke).
+    void truncateInstances(size_t n) { if (n < instances_.size()) instances_.resize(n); else instances_.clear(); }
 
     // Snap all instances to the current terrain height. Call after terrain
     // edits so details follow the heightfield. Optionally restrict to a

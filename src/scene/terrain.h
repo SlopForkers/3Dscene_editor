@@ -48,6 +48,15 @@ public:
     // Apply a brush stroke at a world-space (xz) location.
     // Returns true if the terrain was modified.
     bool applyBrush(const BrushParams& bp, const glm::vec3& worldPos);
+    // Grid-space rect [x0,z0]..[x1,z1] (inclusive, clamped) a brush at
+    // worldPos with the given radius touches. Used by applyBrush internally
+    // and by undo capture.
+    void brushFootprint(const glm::vec3& worldPos, float radius,
+                        int& x0, int& z0, int& x1, int& z1) const;
+    // Re-upload after external height edits in [x0,z0]..[x1,z1] (undo/redo).
+    void heightsChanged(int x0, int z0, int x1, int z1);
+    // Re-upload after external splat edits (undo/redo).
+    void splatChanged();
 
     // Intersect a world-space ray with the terrain heightfield.
     // Returns true if hit; fills outPoint with the world hit location.
@@ -102,6 +111,16 @@ public:
     // Remove a layer by index. Splat weights are remapped so painted areas
     // keep their textures (layers above the removed one shift down).
     void removeLayer(int layerIndex);
+    // Re-insert a previously removed layer (undo). Recreates the GL preview
+    // textures from the CPU pixel copies and rebuilds the texture arrays.
+    // Does NOT touch the splat map — the caller restores it separately.
+    void insertLayer(int index, const Layer& layer);
+    // Replace a layer's CPU pixels + GL preview without file IO (undo/redo
+    // of texture loads). Pix must be ARRAY_SIZE*ARRAY_SIZE*4 RGBA.
+    void setLayerAlbedoPixels(int i, const std::vector<uint8_t>& pix,
+                              const std::string& path);
+    void setLayerNormalPixels(int i, const std::vector<uint8_t>& pix,
+                              const std::string& path, bool hasNormal);
     void resetSplat();   // clear splat to layer 0 only
 
     // Scene serialization accessors.

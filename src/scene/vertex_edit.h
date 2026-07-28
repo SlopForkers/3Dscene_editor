@@ -44,6 +44,12 @@ public:
     // Abort an in-progress drag (e.g. the tool was switched mid-drag).
     void cancelDrag() { dragging_ = false; activeAxis_ = -1; }
 
+    // Grid-space box touched by the current drag (undo capture). Valid only
+    // while dragging().
+    void dragBox(int& x0, int& z0, int& x1, int& z1) const {
+        x0 = boxX0_; z0 = boxZ0_; x1 = boxX1_; z1 = boxZ1_;
+    }
+
     DragMode dragMode() const { return dragMode_; }
     void setDragMode(DragMode m) { dragMode_ = m; }
 

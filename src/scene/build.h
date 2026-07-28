@@ -95,6 +95,9 @@ public:
     // Place a block with explicit parameters. Returns its id.
     int  placeBlock(const glm::vec3& center, const glm::vec3& size,
                     BlockType type, const glm::vec3& color, float yaw = 0.0f);
+    // Re-insert a block with its ORIGINAL id (undo/redo restore). Keeps the
+    // id counter ahead of the restored id so future placements never collide.
+    int  placeBlockWithId(const Block& b);
 
     void removeBlock(int id);
     void clear();
@@ -162,8 +165,10 @@ public:
     // Compute the wall line parameters (fixed coord + along axis) for placing a
     // wall on the edge of the picked block, given the current wall edge.
     void wallLineParamsFor(const Block& support, float& outFixed, bool& outAlongX) const;
-    // Erase all blocks within a grid-aligned rectangle.
-    int  eraseRect(float x0, float z0, float x1, float z1);
+    // Erase all blocks within a grid-aligned rectangle. If `removed` is
+    // given, the erased blocks are copied there first (undo capture).
+    int  eraseRect(float x0, float z0, float x1, float z1,
+                   std::vector<Block>* removed = nullptr);
     // True if a block already occupies grid cell (x,z).
     bool cellOccupied(float x, float z) const;
 

@@ -31,8 +31,12 @@ public:
     // Place a new prop centred at worldPos, snapped to terrain height h.
     // The model is auto-scaled so its largest AABB dimension ~= targetSize.
     int addProp(std::shared_ptr<Model> model, const glm::vec3& worldPos,
-                float terrainHeight, float targetSize = 6.0f,
-                const std::string& name = "");
+                 float terrainHeight, float targetSize = 6.0f,
+                 const std::string& name = "");
+
+    // Re-insert a prop with its ORIGINAL id (undo/redo restore). Keeps the
+    // id counter ahead of the restored id so future adds never collide.
+    int addPropWithId(const Prop& p);
 
     void removeProp(int id);
     void clear();

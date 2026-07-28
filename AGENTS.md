@@ -53,7 +53,9 @@ src/
  │   ├─ skybox.cpp/h ............. cubemap sky + equirect→cubemap
  │   ├─ gizmo.cpp/h .............. translate/rotate/scale manipulator
  │   ├─ scene.cpp/h .............. App::saveScene/loadScene wrappers (format: scene.h)
- │   └─ scene_io.cpp/h ........... free save/load functions over SceneContext refs
+ │   ├─ scene_io.cpp/h ........... free save/load functions over SceneContext refs
+ │   ├─ history.cpp/h ............ undo stack: Command base, memory budget, merge
+ │   └─ commands.cpp/h ........... concrete undoable edits (terrain/props/blocks/…)
  └─ platform/ (foundation – zero editor dependencies)
      ├─ camera.cpp/h ............. orbit camera + screenToRay
      ├─ input.cpp/h .............. GLFW callbacks → per-frame state
@@ -138,6 +140,14 @@ lives in.
 - **Build & CI**: `-Wall -Wextra -Wpedantic` on `scene_editor`; dependency
   includes are `SYSTEM` (warnings only on our code). New code must be
   warning-clean. `.clang-format` is provided (Google-based, 4-space, K&R).
+- **Undo/Redo**: tools mutate the scene FIRST, then push a `Command`
+  (`scene/commands.h`) with before/after data — `History::push` never calls
+  `redo()`. One command per stroke/drag (capture at press, push at release).
+  `Command::merge(const Command&)` coalesces same-kind edits (prop slider
+  drags) — it must not take ownership of its argument. Prop/block ids are
+  preserved across undo/redo via `addPropWithId`/`placeBlockWithId`; never
+  capture raw `Prop*`/`Block*` pointers in commands (vector reallocation).
+  `App::loadScene` clears the history. Hotkeys: Ctrl+Z, Ctrl+Shift+Z, Ctrl+Y.
 
 ### .scene format
 

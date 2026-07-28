@@ -13,6 +13,7 @@
 #include "build.h"
 #include "gl_resource.h"
 #include "tools.h"
+#include "history.h"
 #include <memory>
 #include <string>
 #include <vector>
@@ -30,6 +31,7 @@ public:
         CatBrush = 0, CatVertex, CatProps, CatVegetation,
         CatBuild,
         CatTerrain, CatNoise, CatLayers, CatEnv, CatView,
+        CatHistory,
         CatFile,
         CatCount
     };
@@ -54,6 +56,7 @@ public:
     PropManager props_;
     DetailSystem details_;
     BuildSystem build_;
+    History history_;
     std::vector<std::shared_ptr<Model>> modelLibrary_;
     Noise::Params noiseParams_;
     GlTexture noiseTex_;
@@ -97,11 +100,16 @@ public:
     void drawLayersContent();
     void drawEnvContent();
     void drawViewContent();
+    void drawHistoryContent();
     void drawFileContent();
     void drawHelpOverlay();
 
     bool saveScene(const std::string& path);
     bool loadScene(const std::string& path);
+
+    // Undo/redo entry points (hotkeys + History panel buttons).
+    void undoEdit();
+    void redoEdit();
 
     // Concrete tools (one per tool mode).
     TerrainTool terrainTool_;
@@ -113,6 +121,13 @@ public:
     int  toolMode_        = ToolPaint;
     int  activeCategory_  = CatBrush;
     bool continuousStroke_ = true;
+
+    // Prop panel transform-edit capture (IsItemActivated/Deactivated pair).
+    bool propEditActive_ = false;
+    int  propEditId_ = -1;
+    glm::vec3 propEditPos_   = glm::vec3(0.0f);
+    glm::vec3 propEditRot_   = glm::vec3(0.0f);
+    glm::vec3 propEditScale_ = glm::vec3(1.0f);
 
 private:
     bool initWindow();

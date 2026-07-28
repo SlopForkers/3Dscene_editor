@@ -64,6 +64,13 @@ int PropManager::addProp(std::shared_ptr<Model> model, const glm::vec3& worldPos
     return p.id;
 }
 
+int PropManager::addPropWithId(const Prop& p) {
+    if (!p.model || !p.model->valid()) return -1;
+    props_.push_back(p);
+    if (p.id >= nextId_) nextId_ = p.id + 1;
+    return p.id;
+}
+
 void PropManager::removeProp(int id) {
     props_.erase(std::remove_if(props_.begin(), props_.end(),
         [id](const Prop& p) { return p.id == id; }), props_.end());

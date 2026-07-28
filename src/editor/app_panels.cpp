@@ -3,6 +3,7 @@
 #include "app.h"
 #include "ui_common.h"
 #include "model.h"
+#include "commands.h"
 #include "file_dialog.h"
 #include <imgui.h>
 #include <algorithm>
@@ -153,18 +154,54 @@ void App::drawPropsContent() {
     if (sel) {
         ImGui::Separator();
         ImGui::Text("Selected: %s", sel->displayName.c_str());
+
+        // Undo capture for direct widget edits: snapshot on activation, push
+        // on deactivation-after-edit. PropTransformCommand::merge coalesces
+        // back-to-back widget drags of the same prop.
+        auto trackWidget = [&]() {
+            if (ImGui::IsItemActivated() && !propEditActive_) {
+                propEditActive_ = true;
+                propEditId_     = sel->id;
+                propEditPos_    = sel->position;
+                propEditRot_    = sel->rotationEuler;
+                propEditScale_  = sel->scale;
+            }
+            if (ImGui::IsItemDeactivatedAfterEdit() && propEditActive_) {
+                Prop* p = props_.findProp(propEditId_);
+                if (p && (p->position != propEditPos_ ||
+                          p->rotationEuler != propEditRot_ ||
+                          p->scale != propEditScale_)) {
+                    history_.push(std::make_unique<PropTransformCommand>(
+                        props_, propEditId_,
+                        propEditPos_, propEditRot_, propEditScale_,
+                        p->position, p->rotationEuler, p->scale));
+                }
+                propEditActive_ = false;
+            }
+        };
+
         ImGui::DragFloat3("Position", &sel->position[0], 0.5f);
+        trackWidget();
         ImGui::SliderFloat("Yaw",   &sel->rotationEuler.y, -3.14159f, 3.14159f, "%.2f");
+        trackWidget();
         ImGui::SliderFloat("Pitch", &sel->rotationEuler.x, -1.5708f,  1.5708f,  "%.2f");
+        trackWidget();
         ImGui::SliderFloat("Roll",  &sel->rotationEuler.z, -3.14159f, 3.14159f, "%.2f");
+        trackWidget();
         float uniformScale = sel->scale.x;
         if (ImGui::SliderFloat("Scale", &uniformScale, 0.01f, 20.0f, "%.2f", ImGuiSliderFlags_Logarithmic)) {
             sel->scale = glm::vec3(uniformScale);
         }
+        trackWidget();
         if (ImGui::Button("Snap to ground")) {
+            glm::vec3 oldPos = sel->position;
             float h = terrain_.heightAtWorld(sel->position.x, sel->position.z);
             float bottom = sel->model ? sel->model->aabbMin().y : 0.0f;
             sel->position.y = h - bottom * sel->scale.y;
+            if (sel->position != oldPos)
+                history_.push(std::make_unique<PropTransformCommand>(
+                    props_, sel->id, oldPos, sel->rotationEuler, sel->scale,
+                    sel->position, sel->rotationEuler, sel->scale));
         }
         ImGui::SameLine();
         if (ImGui::Button("Duplicate")) {
@@ -184,12 +221,18 @@ void App::drawPropsContent() {
                     np->rotationEuler = rot;
                     np->scale = scl;
                     np->position = pos;
+                    history_.push(std::make_unique<PropCommand>(
+                        props_, *np, true, "Duplicate Prop"));
                 }
             }
         }
         ImGui::SameLine();
         if (ImGui::Button("Delete")) {
-            props_.removeProp(sel->id);
+            Prop copy = *sel;
+            int id = sel->id;
+            history_.push(std::make_unique<PropCommand>(
+                props_, copy, false, "Delete Prop"));
+            props_.removeProp(id);
         }
     }
 }
@@ -674,6 +717,8 @@ void App::drawLayersContent() {
         if (ImGui::IsItemHovered())
             ImGui::SetTooltip("Layer %d: %s  (right-click to remove)", i, l.name.c_str());
         if (ImGui::IsItemClicked(ImGuiMouseButton_Right) && nLay > 1) {
+            history_.push(std::make_unique<LayerRemoveCommand>(
+                terrain_, i, terrain_.layers()[i], terrain_.splatData()));
             terrain_.removeLayer(i);
             if (brush_.textureLayer >= terrain_.layerCount())
                 brush_.textureLayer = terrain_.layerCount() - 1;
@@ -687,8 +732,13 @@ void App::drawLayersContent() {
         if (ImGui::Button("Add texture...")) {
             std::string p = openFileDialog("Image", "*.png;*.jpg;*.jpeg;*.tga;*.bmp", nativeWindow());
             if (!p.empty()) {
+                std::vector<uint8_t> splatBefore = terrain_.splatData();
                 int idx = terrain_.addLayer(p);
-                if (idx >= 0) brush_.textureLayer = idx;
+                if (idx >= 0) {
+                    history_.push(std::make_unique<LayerAddCommand>(
+                        terrain_, idx, terrain_.layers()[idx], std::move(splatBefore)));
+                    brush_.textureLayer = idx;
+                }
             }
         }
     }
@@ -708,12 +758,32 @@ void App::drawLayersContent() {
             terrain_.setLayerTileSize(al, ts);
         if (ImGui::Button("Replace albedo...")) {
             std::string p = openFileDialog("Image", "*.png;*.jpg;*.jpeg;*.tga;*.bmp", nativeWindow());
-            if (!p.empty()) terrain_.loadLayerAlbedo(al, p);
+            if (!p.empty()) {
+                auto cmd = std::make_unique<LayerTextureCommand>(terrain_, al, false);
+                cmd->oldPix = terrain_.layers()[al].albedoPix;
+                cmd->oldPath = terrain_.layers()[al].albedoPath;
+                if (terrain_.loadLayerAlbedo(al, p)) {
+                    cmd->newPix = terrain_.layers()[al].albedoPix;
+                    cmd->newPath = terrain_.layers()[al].albedoPath;
+                    history_.push(std::move(cmd));
+                }
+            }
         }
         ImGui::SameLine();
         if (ImGui::Button("Load normal...")) {
             std::string p = openFileDialog("Image", "*.png;*.jpg;*.jpeg;*.tga;*.bmp", nativeWindow());
-            if (!p.empty()) terrain_.loadLayerNormal(al, p);
+            if (!p.empty()) {
+                auto cmd = std::make_unique<LayerTextureCommand>(terrain_, al, true);
+                cmd->oldPix = terrain_.layers()[al].normalPix;
+                cmd->oldPath = terrain_.layers()[al].normalPath;
+                cmd->oldHasNormal = terrain_.layers()[al].hasNormal;
+                if (terrain_.loadLayerNormal(al, p)) {
+                    cmd->newPix = terrain_.layers()[al].normalPix;
+                    cmd->newPath = terrain_.layers()[al].normalPath;
+                    cmd->newHasNormal = terrain_.layers()[al].hasNormal;
+                    history_.push(std::move(cmd));
+                }
+            }
         }
         char nm[64];
         std::snprintf(nm, sizeof(nm), "%s", L.name.c_str());
@@ -722,7 +792,10 @@ void App::drawLayersContent() {
     }
 
     ImGui::Separator();
-    if (ImGui::Button("Reset Splat")) terrain_.resetSplat();
+    if (ImGui::Button("Reset Splat")) {
+        history_.push(std::make_unique<SplatResetCommand>(terrain_, terrain_.splatData()));
+        terrain_.resetSplat();
+    }
 }
 
 void App::drawEnvContent() {
@@ -765,6 +838,52 @@ void App::drawViewContent() {
         camera_ = Camera();
         camera_.setViewport(fbWidth_, fbHeight_);
     }
+}
+
+void App::drawHistoryContent() {
+    ImGui::TextDisabled("History");
+    ImGui::Separator();
+
+    if (!history_.canUndo()) ImGui::BeginDisabled();
+    if (ImGui::Button("Undo  (Ctrl+Z)")) undoEdit();
+    if (!history_.canUndo()) ImGui::EndDisabled();
+    ImGui::SameLine();
+    if (!history_.canRedo()) ImGui::BeginDisabled();
+    if (ImGui::Button("Redo  (Ctrl+Shift+Z)")) redoEdit();
+    if (!history_.canRedo()) ImGui::EndDisabled();
+    ImGui::SameLine();
+    if (ImGui::Button("Clear")) history_.clear();
+
+    ImGui::Text("Memory: %.1f / %.0f MB",
+                history_.memoryUsed() / 1048576.0,
+                history_.memoryLimit() / 1048576.0);
+    ImGui::Separator();
+
+    ImGui::BeginChild("historylist", ImVec2(0, 0), true);
+    // Redo arm first (greyed) — these are the "future" edits.
+    for (size_t i = 0; i < history_.redoCount(); ++i) {
+        const Command* c = history_.redoAt(i);
+        if (!c) continue;
+        ImGui::PushID((int)i - 100000);
+        ImGui::TextDisabled("%s", c->name());
+        ImGui::PopID();
+    }
+    if (history_.canRedo()) {
+        ImGui::Separator();
+        ImGui::TextDisabled("-- current state --");
+    }
+    // Undo arm, most recent first; the top entry is the next to be undone.
+    for (size_t i = 0; i < history_.undoCount(); ++i) {
+        const Command* c = history_.undoAt(i);
+        if (!c) continue;
+        ImGui::PushID((int)i);
+        if (i == 0) ImGui::TextColored(ImVec4(1.0f, 0.85f, 0.3f, 1.0f), "%s", c->name());
+        else        ImGui::Text("%s", c->name());
+        ImGui::PopID();
+    }
+    if (!history_.canUndo() && !history_.canRedo())
+        ImGui::TextDisabled("(empty — edits appear here)");
+    ImGui::EndChild();
 }
 
 void App::drawFileContent() {

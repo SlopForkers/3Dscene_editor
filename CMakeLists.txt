@@ -151,6 +151,10 @@ set(SOURCES
     src/scene/scene.cpp
     src/scene/scene_io.cpp
     src/scene/scene_io.h
+    src/scene/history.cpp
+    src/scene/history.h
+    src/scene/commands.cpp
+    src/scene/commands.h
     src/scene/scene.h
     src/platform/camera.cpp
     src/platform/camera.h
@@ -220,10 +224,13 @@ if(BUILD_TESTS)
     add_executable(tests
         tests/test_main.cpp
         tests/test_noise.cpp
+        tests/test_history.cpp
+        ${CMAKE_SOURCE_DIR}/src/scene/history.cpp
     )
     target_include_directories(tests PRIVATE
         ${CMAKE_SOURCE_DIR}/src
         ${CMAKE_SOURCE_DIR}/src/platform
+        ${CMAKE_SOURCE_DIR}/src/scene
     )
     target_link_libraries(tests PRIVATE glm doctest::doctest)
     target_compile_options(tests PRIVATE -Wall -Wextra -Wpedantic)

@@ -202,6 +202,20 @@ static void CatView(ImDrawList* dl, ImVec2 p0, ImVec2 p1, ImU32 col) {
                        ImVec2(c.x - w * 0.5f, c.y + h), ImVec2(c.x - w, c.y), col, 2.5f);
     dl->AddCircleFilled(c, h * 0.6f, col);
 }
+static void CatHistory(ImDrawList* dl, ImVec2 p0, ImVec2 p1, ImU32 col) {
+    ImVec2 c((p0.x + p1.x) * 0.5f, (p0.y + p1.y) * 0.5f);
+    float r = (p1.x - p0.x) * 0.24f;
+    // Counter-clockwise arc with a gap at the right for the arrowhead.
+    dl->PathArcTo(c, r, 0.6f, 5.4f, 16);
+    dl->PathStroke(col, 0, 2.0f);
+    // Arrowhead at the arc start.
+    ImVec2 tip(c.x + r * cosf(0.6f), c.y + r * sinf(0.6f));
+    dl->AddLine(tip, ImVec2(tip.x - 6.0f, tip.y + 0.5f), col, 2.0f);
+    dl->AddLine(tip, ImVec2(tip.x - 1.5f, tip.y + 6.0f), col, 2.0f);
+    // Clock hands.
+    dl->AddLine(c, ImVec2(c.x, c.y - r * 0.55f), col, 2.0f);
+    dl->AddLine(c, ImVec2(c.x + r * 0.4f, c.y), col, 2.0f);
+}
 static void CatFile(ImDrawList* dl, ImVec2 p0, ImVec2 p1, ImU32 col) {
     float x0 = p0.x + (p1.x - p0.x) * 0.22f;
     float x1 = p1.x - (p1.x - p0.x) * 0.22f;
@@ -281,6 +295,7 @@ IconFn catIcon(int cat) {
         case App::CatLayers:     return &CatLayers;
         case App::CatEnv:        return &CatEnv;
         case App::CatView:       return &CatView;
+        case App::CatHistory:    return &CatHistory;
         case App::CatFile:       return &CatFile;
         default: return nullptr;
     }
@@ -297,6 +312,7 @@ const char* catName(int cat) {
         case App::CatLayers:   return "Layers";
         case App::CatEnv:      return "Environment";
         case App::CatView:       return "View";
+        case App::CatHistory:    return "History";
         case App::CatFile:       return "File";
         default: return "?";
     }

@@ -111,23 +111,28 @@ float Terrain::falloff(float dist, float radius, int mode) const {
     }
 }
 
-bool Terrain::applyBrush(const BrushParams& bp, const glm::vec3& worldPos) {
-    // Find grid range affected by the brush radius.
+void Terrain::brushFootprint(const glm::vec3& worldPos, float radius,
+                             int& x0, int& z0, int& x1, int& z1) const {
     float cellX = worldSize_ / float(gridX_ - 1);
     float cellZ = worldSize_ / float(gridZ_ - 1);
-    float r = bp.radius;
 
     // Round (not truncate) so the brush footprint stays centred on the
     // cursor instead of being biased by half a cell towards -X/-Z.
     int ixCenter = int(std::round((worldPos.x / worldSize_ + 0.5f) * (gridX_ - 1)));
     int izCenter = int(std::round((worldPos.z / worldSize_ + 0.5f) * (gridZ_ - 1)));
-    int spanX = int(r / cellX) + 1;
-    int spanZ = int(r / cellZ) + 1;
+    int spanX = int(radius / cellX) + 1;
+    int spanZ = int(radius / cellZ) + 1;
 
-    int x0 = std::max(0, ixCenter - spanX);
-    int x1 = std::min(gridX_ - 1, ixCenter + spanX);
-    int z0 = std::max(0, izCenter - spanZ);
-    int z1 = std::min(gridZ_ - 1, izCenter + spanZ);
+    x0 = std::max(0, ixCenter - spanX);
+    x1 = std::min(gridX_ - 1, ixCenter + spanX);
+    z0 = std::max(0, izCenter - spanZ);
+    z1 = std::min(gridZ_ - 1, izCenter + spanZ);
+}
+
+bool Terrain::applyBrush(const BrushParams& bp, const glm::vec3& worldPos) {
+    int x0, z0, x1, z1;
+    brushFootprint(worldPos, bp.radius, x0, z0, x1, z1);
+    float r = bp.radius;
 
     if (x0 > x1 || z0 > z1) return false;
 
@@ -360,6 +365,13 @@ void Terrain::setHeightRaw(int ix, int iz, float h) {
     int i = idx(clampIX(ix), clampIZ(iz));
     vertices_[i].position.y = h;
 }
+void Terrain::heightsChanged(int x0, int z0, int x1, int z1) {
+    refresh(x0, z0, x1, z1);
+    updateStats();
+}
+
+void Terrain::splatChanged() { uploadSplat(); }
+
 void Terrain::refresh(int x0, int z0, int x1, int z1) {
     // Expand by 1 so normals at the boundary see the changed heights.
     recomputeNormals(std::max(0, x0 - 1), std::max(0, z0 - 1),
@@ -736,6 +748,37 @@ int Terrain::addLayer(const std::string& albedoPath) {
     layers_.push_back(std::move(L));
     rebuildArrays();
     return (int)layers_.size() - 1;
+}
+
+void Terrain::insertLayer(int index, const Layer& layer) {
+    if (index < 0 || index > (int)layers_.size()) return;
+    if ((int)layers_.size() >= MAX_LAYERS) return;
+    Layer L = layer;   // copy pixels/paths/settings
+    make2DFromPixels(L.albedoPix, L.albedo);
+    if (L.hasNormal && !L.normalPix.empty())
+        make2DFromPixels(L.normalPix, L.normal);
+    layers_.insert(layers_.begin() + index, std::move(L));
+    rebuildArrays();
+}
+
+void Terrain::setLayerAlbedoPixels(int i, const std::vector<uint8_t>& pix,
+                                   const std::string& path) {
+    if (i < 0 || i >= (int)layers_.size()) return;
+    layers_[i].albedoPix = pix;
+    layers_[i].albedoPath = path;
+    make2DFromPixels(layers_[i].albedoPix, layers_[i].albedo);
+    rebuildArrays();
+}
+
+void Terrain::setLayerNormalPixels(int i, const std::vector<uint8_t>& pix,
+                                   const std::string& path, bool hasNormal) {
+    if (i < 0 || i >= (int)layers_.size()) return;
+    layers_[i].normalPix = pix;
+    layers_[i].normalPath = path;
+    layers_[i].hasNormal = hasNormal;
+    if (hasNormal && !pix.empty())
+        make2DFromPixels(layers_[i].normalPix, layers_[i].normal);
+    rebuildArrays();
 }
 
 void Terrain::removeLayer(int layerIndex) {
