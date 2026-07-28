@@ -1,5 +1,6 @@
 #include "sys_util.h"
-#include <cstdio>
+#include <filesystem>
+#include <fstream>
 
 #ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
@@ -17,46 +18,30 @@ std::wstring utf8ToWide(const std::string& s) {
 std::string wideToUtf8(const wchar_t* w) {
     if (!w || !*w) return {};
     int len = WideCharToMultiByte(CP_UTF8, 0, w, -1, nullptr, 0, nullptr, nullptr);
-    if (len <= 1) return {};   // 0 = error, 1 = empty string (just the NUL)
+    if (len <= 1) return {};
     std::string s(len - 1, '\0');
     WideCharToMultiByte(CP_UTF8, 0, w, -1, s.data(), len, nullptr, nullptr);
     return s;
 }
 #endif
 
-namespace {
-FILE* openFile(const std::string& utf8Path, bool write) {
-#ifdef _WIN32
-    std::wstring w = utf8ToWide(utf8Path);
-    if (w.empty()) return nullptr;
-    FILE* f = nullptr;
-    _wfopen_s(&f, w.c_str(), write ? L"wb" : L"rb");
-    return f;
-#else
-    return std::fopen(utf8Path.c_str(), write ? "wb" : "rb");
-#endif
-}
-} // namespace
-
 bool readFileBytes(const std::string& utf8Path, std::vector<char>& out) {
-    FILE* f = openFile(utf8Path, false);
+    std::filesystem::path p(std::u8string(utf8Path.begin(), utf8Path.end()));
+    std::ifstream f(p, std::ios::binary | std::ios::ate);
     if (!f) return false;
-    std::fseek(f, 0, SEEK_END);
-    long size = std::ftell(f);
-    std::fseek(f, 0, SEEK_SET);
-    if (size < 0) { std::fclose(f); return false; }
+    auto size = f.tellg();
+    if (size <= 0) return false;
+    f.seekg(0, std::ios::beg);
     out.resize((size_t)size);
-    size_t read = size > 0 ? std::fread(out.data(), 1, (size_t)size, f) : 0;
-    bool ok = std::ferror(f) == 0 && read == (size_t)size;
-    std::fclose(f);
-    return ok;
+    f.read(out.data(), size);
+    return f.good() && (size_t)f.gcount() == (size_t)size;
 }
 
 bool writeFileBytes(const std::string& utf8Path, const void* data, size_t size) {
-    FILE* f = openFile(utf8Path, true);
+    std::filesystem::path p(std::u8string(utf8Path.begin(), utf8Path.end()));
+    std::ofstream f(p, std::ios::binary | std::ios::trunc);
     if (!f) return false;
-    size_t written = size > 0 ? std::fwrite(data, 1, size, f) : 0;
-    bool ok = std::ferror(f) == 0 && written == size;
-    std::fclose(f);
-    return ok;
+    if (size == 0) return true;
+    f.write((const char*)data, (std::streamsize)size);
+    return f.good();
 }

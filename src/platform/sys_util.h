@@ -4,9 +4,8 @@
 
 // Platform helpers. On Windows the C runtime narrow-file APIs interpret
 // char* paths as ANSI, so all file IO in the app goes through these
-// functions, which accept UTF-8 and use the wide Win32 APIs internally.
-// On other platforms they fall back to plain fopen (paths are already
-// UTF-8 there).
+// functions, which use std::filesystem::path(std::u8string) to open files
+// from UTF-8 paths portably.
 
 // Read an entire file. Returns false if it cannot be opened/read.
 bool readFileBytes(const std::string& utf8Path, std::vector<char>& out);
