@@ -1,14 +1,17 @@
-// Editor UI shell: ImGui frame, left tool rail, bottom brush bar, help
-// overlay. The per-category panel contents live in app_panels.cpp; the
-// vector icons live in ui_icons.cpp.
+// Editor UI shell: ImGui frame, dockspace layout, viewport window, toolbar,
+// help overlay. The per-panel contents live in app_panels.cpp; the vector
+// icons live in ui_icons.cpp.
 #include "app.h"
 #include "input.h"
 #include "ui_icons.h"
 #include "ui_common.h"
 #include <imgui.h>
+#include <imgui_internal.h>   // DockBuilder* (programmatic dock layouts)
 #include <backends/imgui_impl_glfw.h>
 #include <backends/imgui_impl_opengl3.h>
+#include <algorithm>
 #include <cstdio>
+
 const char* brushTypeName(int t) {
     switch (t) {
         case Terrain::BrushParams::Raise:   return "Raise";
@@ -37,31 +40,51 @@ void App::renderImGui() {
     ImGui_ImplGlfw_NewFrame();
     ImGui::NewFrame();
 
-    drawLeftPanel();
-    drawBrushBar();
+    // Full-viewport dockspace. On the first run (no layout in imgui.ini) a
+    // default arrangement is built; afterwards the user's layout persists
+    // via imgui.ini. Dock nodes from the .ini are instantiated during
+    // NewFrame(), so a missing node reliably means "no saved layout".
+    ImGuiID dockspaceId = ImGui::GetID("SceneEditorDockspace");
+    if (ImGui::DockBuilderGetNode(dockspaceId) == nullptr)
+        buildDefaultLayout(dockspaceId);
+    ImGui::DockSpaceOverViewport(dockspaceId, ImGui::GetMainViewport());
+
+    drawViewportWindow();
+    drawToolbarWindow();
+    drawToolsWindow();
+    drawHierarchyWindow();
+    drawInspectorWindow();
+    drawSettingsWindow();
+    drawTerrainWindow();
+    drawLayersWindow();
+    drawHistoryWindow();
+    drawFileWindow();
     if (showHelp_) drawHelpOverlay();
 
-    // Brush value overlay: show radius/strength inside the cursor circle while
+    // Brush value overlay: show radius/strength over the viewport image while
     // Shift or Ctrl is held (the modifiers used to scrub them via scroll).
-    if (brushHasHit_ && toolMode_ == ToolPaint) {
+    if (brushHasHit_ && viewportHovered_ && toolMode_ == ToolPaint) {
         bool shift = g_input.keyDown(GLFW_KEY_LEFT_SHIFT) ||
                      g_input.keyDown(GLFW_KEY_RIGHT_SHIFT);
         bool ctrl  = g_input.keyDown(GLFW_KEY_LEFT_CONTROL) ||
                      g_input.keyDown(GLFW_KEY_RIGHT_CONTROL);
-        if (shift || ctrl) {
+        if ((shift || ctrl) && vpScaleX_ > 0.0f && vpScaleY_ > 0.0f) {
             glm::vec4 clip = camera_.projection() * camera_.view() *
                              glm::vec4(brushHit_, 1.0f);
             if (clip.w > 0.0f) {
+                // NDC -> viewport FBO pixels -> main-window pixels.
                 float ndcX = clip.x / clip.w;
                 float ndcY = clip.y / clip.w;
-                float px = (ndcX * 0.5f + 0.5f) * float(fbWidth_);
-                float py = (1.0f - (ndcY * 0.5f + 0.5f)) * float(fbHeight_);
+                float fx = (ndcX * 0.5f + 0.5f) * float(viewportW_);
+                float fy = (1.0f - (ndcY * 0.5f + 0.5f)) * float(viewportH_);
+                float px = vpWinX_ + fx / vpScaleX_;
+                float py = vpWinY_ + fy / vpScaleY_;
                 char buf[32];
                 if (shift)
                     std::snprintf(buf, sizeof(buf), "R %.1f", brush_.radius);
                 else
                     std::snprintf(buf, sizeof(buf), "S %.2f", brush_.strength);
-                ImDrawList* dl = ImGui::GetForegroundDrawList();
+                ImDrawList* dl = ImGui::GetForegroundDrawList(ImGui::GetMainViewport());
                 ImVec2 ts = ImGui::CalcTextSize(buf);
                 ImVec2 pos(px - ts.x * 0.5f, py - ts.y * 0.5f);
                 dl->AddRectFilled(ImVec2(pos.x - 3, pos.y - 2),
@@ -74,11 +97,305 @@ void App::renderImGui() {
 
     ImGui::Render();
     ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
+
+    // Multi-viewport: render any torn-out platform windows into their own
+    // OS windows (they have their own GLFW window + GL context).
+    ImGuiIO& io = ImGui::GetIO();
+    if (io.ConfigFlags & ImGuiConfigFlags_ViewportsEnable) {
+        GLFWwindow* backupContext = glfwGetCurrentContext();
+        ImGui::UpdatePlatformWindows();
+        ImGui::RenderPlatformWindowsDefault();
+        glfwMakeContextCurrent(backupContext);
+    }
 }
 
 // --------------------------------------------------------------------------
-// Mini icon helpers (drawn via ImDrawList, no external assets).
-// Each icon is inscribed in [p0, p1]; col is the stroke/fill colour.
+// Dock layout (first run only — afterwards imgui.ini owns the layout).
+
+void App::buildDefaultLayout(unsigned int dockspaceId) {
+    ImGuiID id = (ImGuiID)dockspaceId;
+    ImGui::DockBuilderRemoveNode(id);
+    ImGui::DockBuilderAddNode(id, ImGuiDockNodeFlags_DockSpace);
+    ImGui::DockBuilderSetNodeSize(id, ImGui::GetMainViewport()->Size);
+
+    ImGuiID remaining = id;
+    ImGuiID dockToolbar = ImGui::DockBuilderSplitNode(remaining, ImGuiDir_Left,
+                                                      0.045f, nullptr, &remaining);
+    ImGuiID dockTools   = ImGui::DockBuilderSplitNode(remaining, ImGuiDir_Left,
+                                                      0.24f, nullptr, &remaining);
+    ImGuiID dockRight   = ImGui::DockBuilderSplitNode(remaining, ImGuiDir_Right,
+                                                      0.26f, nullptr, &remaining);
+    // Right column: Hierarchy on top, Inspector below.
+    ImGuiID dockHierarchy = ImGui::DockBuilderSplitNode(dockRight, ImGuiDir_Up,
+                                                        0.5f, nullptr, &dockRight);
+
+    ImGui::DockBuilderDockWindow("Toolbar", dockToolbar);
+    ImGui::DockBuilderDockWindow("Tools", dockTools);
+    ImGui::DockBuilderDockWindow("Hierarchy", dockHierarchy);
+    ImGui::DockBuilderDockWindow("Inspector", dockRight);
+    ImGui::DockBuilderDockWindow("Viewport", remaining);
+    // Hidden-by-default windows get sensible homes for when they are shown.
+    ImGui::DockBuilderDockWindow("Terrain", dockTools);
+    ImGui::DockBuilderDockWindow("Layers", dockTools);
+    ImGui::DockBuilderDockWindow("File", dockTools);
+    ImGui::DockBuilderDockWindow("Skybox/Settings", dockRight);
+    ImGui::DockBuilderDockWindow("History", dockRight);
+    ImGui::DockBuilderFinish(id);
+}
+
+// --------------------------------------------------------------------------
+// The 3D viewport: scene renders into viewportFbo_; this window displays it.
+
+void App::drawViewportWindow() {
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0, 0));
+    ImGui::Begin("Viewport", nullptr,
+                 ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
+
+    ImVec2 avail = ImGui::GetContentRegionAvail();
+    // FBO size = content size in FRAMEBUFFER pixels (HiDPI: fb > window).
+    float dpiX = winWidth_  > 0 ? float(fbWidth_)  / float(winWidth_)  : 1.0f;
+    float dpiY = winHeight_ > 0 ? float(fbHeight_) / float(winHeight_) : 1.0f;
+    int wantW = int(avail.x * dpiX + 0.5f);
+    int wantH = int(avail.y * dpiY + 0.5f);
+    if (wantW >= 8 && wantH >= 8) {
+        viewportW_ = wantW;
+        viewportH_ = wantH;
+    }
+
+    // Mouse coords from GLFW are relative to the MAIN window client area.
+    // ImGui screen coords are viewport-relative; subtracting the main
+    // viewport origin converts back to client coords. (With viewports
+    // enabled the main viewport origin is the OS-screen pos of our window.)
+    ImVec2 imgPos  = ImGui::GetCursorScreenPos();
+    ImVec2 mainPos = ImGui::GetMainViewport()->Pos;
+    vpWinX_   = imgPos.x - mainPos.x;
+    vpWinY_   = imgPos.y - mainPos.y;
+    vpScaleX_ = avail.x > 0.0f ? float(viewportW_) / avail.x : 1.0f;
+    vpScaleY_ = avail.y > 0.0f ? float(viewportH_) / avail.y : 1.0f;
+
+    if (viewportFbo_ && viewportW_ > 0 && viewportH_ > 0) {
+        // OpenGL FBO is bottom-up — flip the V coordinate.
+        ImGui::Image((ImTextureID)(intptr_t)viewportColor_.id(), avail,
+                     ImVec2(0, 1), ImVec2(1, 0));
+        // Scene interaction only works while the viewport lives inside the
+        // main OS window; a torn-out platform window has unrelated coords.
+        viewportHovered_ = ImGui::IsItemHovered() &&
+            ImGui::GetWindowViewport()->ID == ImGui::GetMainViewport()->ID;
+    } else {
+        viewportHovered_ = false;
+    }
+
+    ImGui::End();
+    ImGui::PopStyleVar();
+}
+
+// --------------------------------------------------------------------------
+// Toolbar: vertical icon strip (replaces the old left rail + bottom brush
+// bar). Tool buttons switch the active tool; panel buttons toggle windows;
+// brush buttons pick the paint brush.
+
+void App::drawToolbarWindow() {
+    ImGui::Begin("Toolbar", nullptr, ImGuiWindowFlags_NoCollapse);
+
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    const float availW = ImGui::GetContentRegionAvail().x;
+    const float cell = 36.0f;
+    const float pad  = 7.0f;
+    const float indent = std::max(0.0f, (availW - cell) * 0.5f);
+
+    // Each cell is a real layout item (InvisibleButton) — it grows the window
+    // content rect — with the icon drawn over its rect afterwards.
+    auto iconCell = [&](icons::IconFn fn, const char* tooltip, bool active) {
+        ImGui::SetCursorPosX(ImGui::GetCursorPosX() + indent);
+        ImGui::PushID(tooltip);
+        ImGui::InvisibleButton("##cell", ImVec2(cell, cell));
+        ImGui::PopID();
+        ImVec2 p0 = ImGui::GetItemRectMin(), p1 = ImGui::GetItemRectMax();
+        bool hover = ImGui::IsItemHovered();
+        if (active || hover)
+            dl->AddRectFilled(p0, p1, ImGui::ColorConvertFloat4ToU32(
+                ImGui::GetStyle().Colors[ImGuiCol_ButtonHovered]), 6.0f);
+        ImU32 col = active ? IM_COL32(255, 230, 110, 255) :
+                    hover  ? IM_COL32(255, 255, 255, 255) :
+                             IM_COL32(210, 210, 210, 255);
+        if (fn) fn(dl, ImVec2(p0.x + pad, p0.y + pad),
+                      ImVec2(p1.x - pad, p1.y - pad), col);
+        if (hover) ImGui::SetTooltip("%s", tooltip);
+        return ImGui::IsItemClicked();
+    };
+    auto separatorCell = [&] {
+        ImGui::SetCursorPosX(ImGui::GetCursorPosX() + indent);
+        ImGui::Dummy(ImVec2(cell, 6.0f));
+        ImVec2 p0 = ImGui::GetItemRectMin(), p1 = ImGui::GetItemRectMax();
+        float dy = (p0.y + p1.y) * 0.5f;
+        dl->AddLine(ImVec2(p0.x + 4, dy), ImVec2(p1.x - 4, dy),
+                    IM_COL32(120, 120, 120, 255), 1.5f);
+    };
+
+    // --- Tools ---
+    const int toolCats[] = { CatBrush, CatVertex, CatProps, CatVegetation, CatBuild };
+    for (int cat : toolCats) {
+        if (iconCell(icons::catIcon(cat), icons::catName(cat), activeCategory_ == cat))
+            selectCategory(cat);
+    }
+    separatorCell();
+
+    // --- Panel toggles ---
+    struct PanelToggle { int cat; const char* name; bool* flag; };
+    PanelToggle panels[] = {
+        { CatTerrain, "Terrain",          &showTerrain_  },
+        { CatLayers,  "Layers",           &showLayers_   },
+        { CatEnv,     "Skybox/Settings",  &showSettings_ },
+        { CatHistory, "History",          &showHistory_  },
+        { CatFile,    "File",             &showFile_     },
+    };
+    for (auto& p : panels) {
+        if (iconCell(icons::catIcon(p.cat), p.name, *p.flag))
+            *p.flag = !*p.flag;
+    }
+
+    // --- Brush quick pick (paint mode only) ---
+    if (toolMode_ == ToolPaint) {
+        separatorCell();
+        for (int i = 0; i < 8; ++i) {
+            if (iconCell(icons::brushIcon(i), brushTypeName(i),
+                         brush_.type == i)) {
+                brush_.type = (Terrain::BrushParams::Type)i;
+                activeCategory_ = (i == Terrain::BrushParams::Vegetation)
+                                  ? CatVegetation : CatBrush;
+            }
+        }
+    }
+
+    ImGui::End();
+}
+
+// --------------------------------------------------------------------------
+// Docked windows. The *Content functions (app_panels.cpp) are reused nearly
+// unchanged — only the shell around them is new.
+
+void App::drawToolsWindow() {
+    if (!showTools_) return;
+    if (ImGui::Begin("Tools", &showTools_)) {
+        switch (activeCategory_) {
+            case CatBrush:      drawBrushContent();      break;
+            case CatVertex:     drawVertexContent();     break;
+            case CatProps:      drawPropToolContent();   break;
+            case CatVegetation: drawVegetationContent(); break;
+            case CatBuild:      drawBuildContent();      break;
+            default:            drawBrushContent();      break;
+        }
+    }
+    ImGui::End();
+}
+
+void App::drawHierarchyWindow() {
+    if (!showHierarchy_) return;
+    if (ImGui::Begin("Hierarchy", &showHierarchy_)) {
+        // --- Props ---
+        if (ImGui::CollapsingHeader("Props", ImGuiTreeNodeFlags_DefaultOpen)) {
+            if (props_.count() == 0)
+                ImGui::TextDisabled("(none — import via the Tools window)");
+            for (const auto& p : props_.props()) {
+                ImGui::PushID(p.id);
+                if (ImGui::Selectable(p.displayName.c_str(),
+                                      p.id == props_.selectedId())) {
+                    selectCategory(CatProps);
+                    props_.select(p.id);
+                }
+                ImGui::PopID();
+            }
+        }
+
+        // --- Blocks ---
+        char blocksHdr[48];
+        std::snprintf(blocksHdr, sizeof(blocksHdr), "Blocks (%d)", build_.count());
+        if (ImGui::CollapsingHeader(blocksHdr)) {
+            if (build_.count() == 0)
+                ImGui::TextDisabled("(none)");
+            for (const auto& b : build_.blocks()) {
+                ImGui::PushID(b.id);
+                char lbl[64];
+                std::snprintf(lbl, sizeof(lbl), "Block %d (%s)", b.id,
+                              b.type == BuildSystem::Foundation ? "Foundation" : "Wall");
+                if (ImGui::Selectable(lbl, b.id == selectedBlockId_)) {
+                    selectCategory(CatBuild);
+                    selectedBlockId_ = b.id;
+                    selectedBlockFace_ = -1;
+                }
+                ImGui::PopID();
+            }
+        }
+
+        // --- Terrain texture layers ---
+        if (ImGui::CollapsingHeader("Texture Layers")) {
+            for (int i = 0; i < terrain_.layerCount(); ++i) {
+                ImGui::PushID(i);
+                char lbl[80];
+                std::snprintf(lbl, sizeof(lbl), "%d: %s", i,
+                              terrain_.layers()[i].name.c_str());
+                if (ImGui::Selectable(lbl, brush_.textureLayer == i)) {
+                    brush_.textureLayer = i;
+                    brush_.type = Terrain::BrushParams::Texture;
+                    selectCategory(CatBrush);
+                }
+                ImGui::PopID();
+            }
+        }
+    }
+    ImGui::End();
+}
+
+void App::drawInspectorWindow() {
+    if (!showInspector_) return;
+    if (ImGui::Begin("Inspector", &showInspector_))
+        drawInspectorContent();
+    ImGui::End();
+}
+
+void App::drawSettingsWindow() {
+    if (!showSettings_) return;
+    if (ImGui::Begin("Skybox/Settings", &showSettings_)) {
+        drawEnvContent();
+        ImGui::Separator();
+        drawViewContent();
+    }
+    ImGui::End();
+}
+
+void App::drawTerrainWindow() {
+    if (!showTerrain_) return;
+    if (ImGui::Begin("Terrain", &showTerrain_)) {
+        drawTerrainContent();
+        ImGui::Spacing();
+        if (ImGui::CollapsingHeader("Noise generator", ImGuiTreeNodeFlags_DefaultOpen))
+            drawNoiseContent();
+    }
+    ImGui::End();
+}
+
+void App::drawLayersWindow() {
+    if (!showLayers_) return;
+    if (ImGui::Begin("Layers", &showLayers_))
+        drawLayersContent();
+    ImGui::End();
+}
+
+void App::drawHistoryWindow() {
+    if (!showHistory_) return;
+    if (ImGui::Begin("History", &showHistory_))
+        drawHistoryContent();
+    ImGui::End();
+}
+
+void App::drawFileWindow() {
+    if (!showFile_) return;
+    if (ImGui::Begin("File", &showFile_))
+        drawFileContent();
+    ImGui::End();
+}
+
+// --------------------------------------------------------------------------
 
 void App::selectCategory(int cat) {
     if (cat < 0 || cat >= CatCount) return;
@@ -100,157 +417,17 @@ void App::selectCategory(int cat) {
     }
 }
 
-void App::drawLeftPanel() {
-    const float railW = 46.0f;
-    float panelH = float(std::max(200, fbHeight_ - 80));
-    ImGui::SetNextWindowPos(ImVec2(10, 10), ImGuiCond_FirstUseEver);
-    ImGui::SetNextWindowSize(ImVec2(320, panelH), ImGuiCond_Always);
-    ImGuiWindowFlags wf = ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize |
-                          ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoMove;
-    ImGui::Begin("##leftpanel", nullptr, wf);
-
-    ImDrawList* dl = ImGui::GetWindowDrawList();
-    ImGuiStyle& style = ImGui::GetStyle();
-
-    const float cellH = 40.0f;
-    const float cellPad = 3.0f;
-    const float iconPad = 7.0f;
-    const ImVec4 activeBg = style.Colors[ImGuiCol_ButtonHovered];
-    const ImVec4 hoverBg  = style.Colors[ImGuiCol_ButtonHovered];
-    const ImVec4 idleBg   = style.Colors[ImGuiCol_ChildBg];
-
-    auto drawCell = [&](int idx, const char* label, icons::IconFn fn,
-                        ImVec2 p0, ImVec2 p1) {
-        bool active = (activeCategory_ == idx);
-        bool hover = ImGui::IsMouseHoveringRect(p0, p1) &&
-                     ImGui::IsWindowHovered(ImGuiHoveredFlags_AllowWhenBlockedByPopup);
-        ImU32 bg = active ? ImGui::ColorConvertFloat4ToU32(activeBg) :
-                   hover  ? ImGui::ColorConvertFloat4ToU32(hoverBg) :
-                            ImGui::ColorConvertFloat4ToU32(idleBg);
-        if (active || hover) dl->AddRectFilled(p0, p1, bg, 6.0f);
-        ImU32 col = active ? IM_COL32(255, 230, 110, 255) :
-                    hover  ? IM_COL32(255, 255, 255, 255) :
-                            IM_COL32(210, 210, 210, 255);
-        if (fn) fn(dl, ImVec2(p0.x + iconPad, p0.y + iconPad),
-                       ImVec2(p1.x - iconPad, p1.y - iconPad), col);
-        ImGui::SetCursorScreenPos(p0);
-        ImGui::InvisibleButton(label, ImVec2(p1.x - p0.x, p1.y - p0.y));
-        if (hover) ImGui::SetTooltip("%s", label);
-        if (ImGui::IsItemClicked()) selectCategory(idx);
-    };
-
-    // --- Rail (left column, full height) ---
-    ImGui::BeginChild("##rail", ImVec2(railW, 0), true, ImGuiWindowFlags_NoScrollbar);
-    ImVec2 railStart = ImGui::GetCursorScreenPos();
-    int order[CatCount + 2] = { CatBrush, CatVertex, CatProps, CatVegetation,
-                                 CatBuild, -1,
-                                 CatTerrain, CatNoise, CatLayers, CatEnv, CatView, -1,
-                                 CatHistory, CatFile };
-    ImVec2 cursor = railStart;
-    for (int o = 0; o < CatCount + 2; ++o) {
-        int cat = order[o];
-        ImVec2 p0 = cursor;
-        ImVec2 p1 = ImVec2(p0.x + railW - 2 * cellPad, p0.y + cellH);
-        if (cat < 0) {
-            float dy = p0.y + cellH * 0.5f;
-            dl->AddLine(ImVec2(p0.x + 6, dy), ImVec2(p1.x - 6, dy),
-                        IM_COL32(120, 120, 120, 255), 1.5f);
-        } else {
-            drawCell(cat, icons::catName(cat), icons::catIcon(cat), p0, p1);
-        }
-        cursor.y += cellH + cellPad;
-    }
-    ImGui::EndChild();
-
-    // --- Content (right column, fills remaining width) ---
-    ImGui::SameLine();
-    ImGui::BeginChild("##content", ImVec2(0, 0), true);
-    switch (activeCategory_) {
-        case CatBrush:      drawBrushContent();      break;
-        case CatVertex:     drawVertexContent();     break;
-        case CatProps:      drawPropsContent();      break;
-        case CatVegetation: drawVegetationContent(); break;
-        case CatBuild:      drawBuildContent();      break;
-        case CatTerrain:    drawTerrainContent();     break;
-        case CatNoise:      drawNoiseContent();      break;
-        case CatLayers:     drawLayersContent();      break;
-        case CatEnv:        drawEnvContent();         break;
-        case CatView:       drawViewContent();        break;
-        case CatHistory:    drawHistoryContent();     break;
-        case CatFile:       drawFileContent();        break;
-    }
-    ImGui::EndChild();
-
-    ImGui::End();
-}
-
-void App::drawBrushBar() {
-    const float cellSize = 44.0f;
-    const float gap = 4.0f;
-    const float pad = 8.0f;
-    const int count = 8;
-    float totalW = float(count) * cellSize + float(count - 1) * gap + 2 * pad;
-    float x = float(fbWidth_) * 0.5f - totalW * 0.5f;
-    float y = float(fbHeight_) - cellSize - 2 * pad - 14.0f;
-
-    ImGui::SetNextWindowPos(ImVec2(x, y), ImGuiCond_Always);
-    ImGui::SetNextWindowSize(ImVec2(totalW, cellSize + 2 * pad), ImGuiCond_Always);
-    ImGuiWindowFlags wf = ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize |
-                          ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoMove |
-                          ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse;
-    ImGui::Begin("##brushbar", nullptr, wf);
-
-    ImDrawList* dl = ImGui::GetWindowDrawList();
-    const ImVec4 activeBg = ImGui::GetStyle().Colors[ImGuiCol_ButtonHovered];
-    const ImVec4 idleBg   = ImGui::GetStyle().Colors[ImGuiCol_FrameBg];
-    const ImVec2 wPos = ImGui::GetWindowPos();
-    const float iconPad = 7.0f;
-    const char* names[] = { "Raise", "Lower", "Smooth", "Flatten",
-                            "Noise", "Set Height", "Texture", "Vegetation" };
-
-    for (int i = 0; i < count; ++i) {
-        ImVec2 p0 = ImVec2(wPos.x + pad + float(i) * (cellSize + gap),
-                            wPos.y + pad);
-        ImVec2 p1 = ImVec2(p0.x + cellSize, p0.y + cellSize);
-        bool active = (brush_.type == i && toolMode_ == ToolPaint);
-        bool hover = ImGui::IsMouseHoveringRect(p0, p1) &&
-                     ImGui::IsWindowHovered();
-        ImU32 bg = active ? ImGui::ColorConvertFloat4ToU32(activeBg) :
-                   hover  ? ImGui::ColorConvertFloat4ToU32(activeBg) :
-                            ImGui::ColorConvertFloat4ToU32(idleBg);
-        dl->AddRectFilled(p0, p1, bg, 6.0f);
-        ImU32 col = active ? IM_COL32(255, 230, 110, 255) :
-                    hover  ? IM_COL32(255, 255, 255, 255) :
-                             IM_COL32(210, 210, 210, 255);
-        auto fn = icons::brushIcon(i);
-        if (fn) fn(dl, ImVec2(p0.x + iconPad, p0.y + iconPad),
-                       ImVec2(p1.x - iconPad, p1.y - iconPad), col);
-        ImGui::SetCursorScreenPos(p0);
-        char lbl[16];
-        std::snprintf(lbl, sizeof(lbl), "##b%d", i);
-        ImGui::InvisibleButton(lbl, ImVec2(cellSize, cellSize));
-        if (hover) ImGui::SetTooltip("%s", names[i]);
-        if (ImGui::IsItemClicked()) {
-            brush_.type = (Terrain::BrushParams::Type)i;
-            toolMode_ = ToolPaint;
-            activeCategory_ = (i == Terrain::BrushParams::Vegetation)
-                              ? CatVegetation : CatBrush;
-        }
-    }
-    ImGui::End();
-}
-
-// --------------------------------------------------------------------------
-
 void App::drawHelpOverlay() {
-    ImGui::SetNextWindowPos(ImVec2(float(fbWidth_) - 290, 10),
-                            ImGuiCond_Always);
+    ImGui::SetNextWindowPos(ImVec2(ImGui::GetIO().DisplaySize.x - 290, 10),
+                            ImGuiCond_FirstUseEver);
     ImGui::Begin("Help", &showHelp_,
                  ImGuiWindowFlags_NoResize | ImGuiWindowFlags_AlwaysAutoResize |
                  ImGuiWindowFlags_NoCollapse);
     ImGui::TextUnformatted("Controls:");
-    ImGui::BulletText("Left rail: pick tool / settings panel");
-    ImGui::BulletText("Bottom bar: pick a brush (switches to Brush mode)");
+    ImGui::BulletText("Toolbar: pick tool / toggle panels");
+    ImGui::BulletText("Tools window: settings for the active tool");
+    ImGui::BulletText("Drag window tabs to re-dock; drag a tab out to");
+    ImGui::BulletText("  make a floating OS window (multi-viewport)");
     ImGui::BulletText("Tab: cycle Brush / Prop / Vertex / Build tool");
     ImGui::BulletText("WASD: move camera (hold)");
     ImGui::BulletText("Right-drag: orbit camera");

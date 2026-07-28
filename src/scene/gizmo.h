@@ -4,7 +4,6 @@
 
 class Camera;
 class Shader;
-struct ImGuiIO;
 
 // A 3D manipulator gizmo for the selected prop. Supports Translate, Rotate
 // and Scale modes with three coloured world axes (X=red, Y=green, Z=blue).
@@ -27,11 +26,13 @@ public:
 
     // Process input for the gizmo at `pos`. `current` is the prop's current
     // transform; on a successful drag `outNew` receives the new transform.
-    // Returns true if the gizmo consumed the input (so the caller should not
-    // also do prop picking / terrain painting this frame).
+    // `overUI` tells whether the mouse is over an ImGui window (the caller
+    // computes it — with docking, io.WantCaptureMouse is true for the whole
+    // dockspace). Returns true if the gizmo consumed the input (so the caller
+    // should not also do prop picking / terrain painting this frame).
     bool handleInput(const Camera& cam, const glm::vec3& pos,
                      const Transform& current, Transform& outNew,
-                     const ImGuiIO& io);
+                     bool overUI);
 
     void draw(const Camera& cam, const glm::vec3& pos, const Shader& lineShader);
 
@@ -41,17 +42,20 @@ public:
     // Abort an in-progress drag (e.g. the tool was switched mid-drag).
     void cancelDrag() { dragging_ = false; activeAxis_ = -1; }
 
-    // Mouse coordinates come from GLFW in WINDOW pixels while the camera
-    // viewport is in FRAMEBUFFER pixels; on HiDPI displays the ratio != 1.
-    // The app sets this once per frame.
-    void setDpiScale(float sx, float sy) { dpiScaleX_ = sx; dpiScaleY_ = sy; }
+    // Mouse coordinates come from GLFW in WINDOW pixels; the scene lives in
+    // the viewport window's FBO. (winX, winY) = image top-left in window px,
+    // (scaleX, scaleY) = window px -> FBO px. The app sets this once per frame.
+    void setViewportRect(float winX, float winY, float scaleX, float scaleY) {
+        vpOffX_ = winX; vpOffY_ = winY; vpScaleX_ = scaleX; vpScaleY_ = scaleY;
+    }
 
 private:
     Mode mode_ = Translate;
     int  activeAxis_ = -1;   // 0=X, 1=Y, 2=Z
     int  hoverAxis_  = -1;
     bool dragging_   = false;
-    float dpiScaleX_ = 1.0f, dpiScaleY_ = 1.0f;
+    float vpOffX_ = 0.0f, vpOffY_ = 0.0f;
+    float vpScaleX_ = 1.0f, vpScaleY_ = 1.0f;
 
     // Drag state (captured at press).
     Transform startTransform_;

@@ -1,5 +1,6 @@
-// Left-rail panel contents: one draw*Content() per category (Brush, Vertex,
-// Props, Vegetation, Build, Terrain, Noise, Layers, Env, View, File).
+// Docked-window panel contents: one draw*Content() per panel (Brush, Vertex,
+// PropTool, Inspector, Vegetation, Build, Terrain, Noise, Layers, Env, View,
+// History, File). The dockable window wrappers live in app_ui.cpp.
 #include "app.h"
 #include "ui_common.h"
 #include "model.h"
@@ -119,7 +120,10 @@ void App::drawVertexContent() {
                        "radius/falloff controls falloff.");
 }
 
-void App::drawPropsContent() {
+// Prop TOOL controls (Tools window): import, default size, gizmo mode.
+// The prop list lives in the Hierarchy window; the selected prop's transform
+// is edited in the Inspector (drawInspectorContent).
+void App::drawPropToolContent() {
     if (ImGui::Button("Import glTF / VRM...")) {
         std::string path = openFileDialog("glTF / VRM", "*.gltf;*.glb;*.vrm",
                                           nativeWindow());
@@ -138,20 +142,16 @@ void App::drawPropsContent() {
     if (ImGui::RadioButton("Scale", mode == Gizmo::Scale)) gizmo_.setMode(Gizmo::Scale);
     ImGui::Separator();
     ImGui::Text("Placed props: %d", props_.count());
-    ImGui::BeginChild("proplist", ImVec2(0, 120), true);
-    for (const auto& p : props_.props()) {
-        bool sel = (p.id == props_.selectedId());
-        ImGui::PushID(p.id);
-        if (ImGui::Selectable(p.displayName.c_str(), sel)) {
-            props_.select(p.id);
-            toolMode_ = ToolProp;
-        }
-        ImGui::PopID();
-    }
-    ImGui::EndChild();
+    ImGui::TextWrapped("Left-click a prop to select it (the Hierarchy window "
+                       "lists them all). Drag the gizmo to transform; the "
+                       "Inspector edits the values directly.");
+}
 
+// Inspector: properties of the current selection (prop, block, or vertices).
+void App::drawInspectorContent() {
     Prop* sel = props_.selected();
     if (sel) {
+        ImGui::TextDisabled("Prop");
         ImGui::Separator();
         ImGui::Text("Selected: %s", sel->displayName.c_str());
 
@@ -234,7 +234,63 @@ void App::drawPropsContent() {
                 props_, copy, false, "Delete Prop"));
             props_.removeProp(id);
         }
+        return;
     }
+
+    // --- Selected block (build tool) ---
+    if (selectedBlockId_ >= 0) {
+        const BuildSystem::Block* b = build_.findBlock(selectedBlockId_);
+        if (!b) {   // stale selection (e.g. after an undo)
+            selectedBlockId_ = -1;
+            selectedBlockFace_ = -1;
+        } else {
+            ImGui::TextDisabled("Block");
+            ImGui::Separator();
+            const char* faceNames[] = { "+X", "-X", "+Y", "-Y", "+Z", "-Z" };
+            ImGui::Text("id=%d  type=%s", b->id,
+                        b->type == BuildSystem::Foundation ? "Foundation" : "Wall");
+            ImGui::Text("pos (%.1f, %.1f, %.1f)",
+                        b->position.x, b->position.y, b->position.z);
+            if (selectedBlockFace_ >= 0)
+                ImGui::Text("Picked face: %s", faceNames[selectedBlockFace_]);
+            if (b->textureIdx >= 0) {
+                ImGui::Text("Texture: %s on %s",
+                            build_.blockTextureName(b->textureIdx).c_str(),
+                            (b->textureFace >= 0 && b->textureFace < 6)
+                                ? faceNames[b->textureFace] : "?");
+                int tm = b->texMode;
+                const char* tmn[] = { "Stretch", "Tile" };
+                if (ImGui::Combo("Tex mode", &tm, tmn, 2))
+                    build_.setBlockTexMode(selectedBlockId_, tm);
+                if (b->texMode == 1) {
+                    float sc = b->texScale;
+                    if (ImGui::SliderFloat("UV scale", &sc, 0.05f, 8.0f, "%.2f"))
+                        build_.setBlockTexScale(selectedBlockId_, sc);
+                }
+                if (ImGui::Button("Clear face texture"))
+                    build_.clearBlockFaceTexture(selectedBlockId_);
+            }
+            if (ImGui::Button("Delete block (Del)")) {
+                build_.removeBlock(selectedBlockId_);
+                selectedBlockId_ = -1;
+                selectedBlockFace_ = -1;
+            }
+            return;
+        }
+    }
+
+    // --- Vertex selection (vertex tool) ---
+    if (vertexEditor_.hasSelection()) {
+        ImGui::TextDisabled("Vertices");
+        ImGui::Separator();
+        ImGui::Text("%d vertex%s selected",
+                    vertexEditor_.selectionCount(),
+                    vertexEditor_.selectionCount() == 1 ? "" : "es");
+        if (ImGui::Button("Clear selection")) vertexEditor_.clearSelection();
+        return;
+    }
+
+    ImGui::TextDisabled("(nothing selected)");
 }
 
 void App::drawVegetationContent() {
@@ -481,45 +537,7 @@ void App::drawBuildContent() {
     }
 
     ImGui::Separator();
-    ImGui::TextDisabled("Selected block");
-    const char* faceNames[] = { "+X", "-X", "+Y", "-Y", "+Z", "-Z" };
-    if (selectedBlockId_ >= 0) {
-        const BuildSystem::Block* b = build_.findBlock(selectedBlockId_);
-        if (b) {
-            ImGui::Text("id=%d  type=%s", b->id,
-                        b->type == BuildSystem::Foundation ? "Foundation" : "Wall");
-            ImGui::Text("pos (%.1f, %.1f, %.1f)",
-                        b->position.x, b->position.y, b->position.z);
-            if (selectedBlockFace_ >= 0)
-                ImGui::Text("Picked face: %s", faceNames[selectedBlockFace_]);
-            if (b->textureIdx >= 0) {
-                ImGui::Text("Texture: %s on %s",
-                            build_.blockTextureName(b->textureIdx).c_str(),
-                            (b->textureFace >= 0 && b->textureFace < 6)
-                                ? faceNames[b->textureFace] : "?");
-                int tm = b->texMode;
-                const char* tmn[] = { "Stretch", "Tile" };
-                if (ImGui::Combo("Tex mode", &tm, tmn, 2))
-                    build_.setBlockTexMode(selectedBlockId_, tm);
-                if (b->texMode == 1) {
-                    float sc = b->texScale;
-                    if (ImGui::SliderFloat("UV scale", &sc, 0.05f, 8.0f, "%.2f"))
-                        build_.setBlockTexScale(selectedBlockId_, sc);
-                }
-                if (ImGui::Button("Clear face texture"))
-                    build_.clearBlockFaceTexture(selectedBlockId_);
-            }
-            if (ImGui::Button("Delete block (Del)")) {
-                build_.removeBlock(selectedBlockId_);
-                selectedBlockId_ = -1;
-                selectedBlockFace_ = -1;
-            }
-        }
-    } else {
-        ImGui::TextDisabled("(none — right-click a block to inspect)");
-    }
-
-    ImGui::Separator();
+    ImGui::TextDisabled("Right-click a block to inspect it in the Inspector.");
     if (build_.mode() == BuildSystem::ModeFoundation) {
         ImGui::TextWrapped("Drag on terrain: foundation rectangle (sunk, same "
                            "level as neighbours). Click block side: extend "
@@ -836,7 +854,7 @@ void App::drawViewContent() {
                 camera_.target().x, camera_.target().y, camera_.target().z);
     if (ImGui::Button("Reset View")) {
         camera_ = Camera();
-        camera_.setViewport(fbWidth_, fbHeight_);
+        // renderScene re-applies the viewport FBO size next frame.
     }
 }
 

@@ -51,9 +51,10 @@ void TerrainTool::endStroke(App& app) {
     }
 }
 
-bool TerrainTool::handleInput(App& app, float dt, const ImGuiIO& io, bool overUI, bool /*typing*/) {
-    if (io.WantCaptureMouse) return false;
-
+bool TerrainTool::handleInput(App& app, float dt, const ImGuiIO& /*io*/, bool overUI, bool /*typing*/) {
+    // NB: no io.WantCaptureMouse early-out here — with docking the whole
+    // window is a dockspace, so WantCaptureMouse is almost always true. The
+    // overUI flag (viewport hover aware) is the authoritative gate.
     if (g_input.mousePressed(Input::Left)) {
         painting_ = !overUI;
         if (painting_) beginStroke(app);
@@ -125,10 +126,10 @@ bool TerrainTool::handleInput(App& app, float dt, const ImGuiIO& io, bool overUI
 void PropTool::cancelDrag() { /* gizmo cancel handled externally */ }
 
 void PropTool::drawPanelContent(App& app) {
-    app.drawPropsContent();
+    app.drawPropToolContent();
 }
 
-bool PropTool::handleInput(App& app, float dt, const ImGuiIO& io, bool overUI, bool /*typing*/) {
+bool PropTool::handleInput(App& app, float dt, const ImGuiIO& /*io*/, bool overUI, bool /*typing*/) {
     (void)dt;
     Prop* sel = app.props_.selected();
 
@@ -136,7 +137,7 @@ bool PropTool::handleInput(App& app, float dt, const ImGuiIO& io, bool overUI, b
     if (sel) {
         Gizmo::Transform cur{ sel->position, sel->rotationEuler, sel->scale };
         Gizmo::Transform next;
-        if (app.gizmo_.handleInput(app.camera_, sel->position, cur, next, io)) {
+        if (app.gizmo_.handleInput(app.camera_, sel->position, cur, next, overUI)) {
             gizmoConsumed = true;
             if (app.gizmo_.dragging()) {
                 if (!gizmoWasDragging_) {

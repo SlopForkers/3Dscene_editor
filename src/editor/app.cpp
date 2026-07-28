@@ -181,8 +181,10 @@ void* App::nativeWindow() const {
 }
 
 void App::cursorRay(glm::vec3& outOrigin, glm::vec3& outDir) const {
-    double sx = g_input.mouseX() * (double)fbWidth_  / (double)winWidth_;
-    double sy = g_input.mouseY() * (double)fbHeight_ / (double)winHeight_;
+    // Mouse is in WINDOW pixels; the scene lives inside the viewport window's
+    // framebuffer-pixel FBO. Remap: window px -> viewport-relative -> FBO px.
+    double sx = (g_input.mouseX() - (double)vpWinX_) * (double)vpScaleX_;
+    double sy = (g_input.mouseY() - (double)vpWinY_) * (double)vpScaleY_;
     camera_.screenToRay((float)sx, (float)sy, outOrigin, outDir);
 }
 
@@ -191,12 +193,19 @@ void App::initImGui() {
     ImGui::CreateContext();
     ImGuiIO& io = ImGui::GetIO();
     io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
-    io.IniFilename = nullptr;
+    // Docking + multi-viewport require the ImGui DOCKING branch build
+    // (CMake pins vX.Y.Z-docking); they are not in mainline 1.9x.
+    io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;
+    io.ConfigFlags |= ImGuiConfigFlags_ViewportsEnable;  // detachable OS windows
+    // io.IniFilename defaults to "imgui.ini" — the dock layout persists there.
 
     ImGui::StyleColorsDark();
     ImGuiStyle& style = ImGui::GetStyle();
     style.WindowRounding = 6.0f;
     style.FrameRounding = 4.0f;
+    // Rounded corners read badly on OS-level viewport windows.
+    if (io.ConfigFlags & ImGuiConfigFlags_ViewportsEnable)
+        style.WindowRounding = 0.0f;
 
     ImGui_ImplGlfw_InitForOpenGL(window_, true);
     ImGui_ImplOpenGL3_Init("#version 330");
@@ -236,6 +245,9 @@ void App::shutdown() {
         dragVbo_.destroy();
         if (shadowFbo_) { glDeleteFramebuffers(1, &shadowFbo_); shadowFbo_ = 0; }
         shadowMap_.destroy();
+        if (viewportFbo_) { glDeleteFramebuffers(1, &viewportFbo_); viewportFbo_ = 0; }
+        viewportColor_.destroy();
+        if (viewportDepthRbo_) { glDeleteRenderbuffers(1, &viewportDepthRbo_); viewportDepthRbo_ = 0; }
         noiseTex_.destroy();
         props_.clear();
         modelLibrary_.clear();
@@ -305,15 +317,17 @@ int App::run(const std::vector<std::string>& importArgs) {
             fbHeight_ = curFbH;
             winWidth_ = curWinW > 0 ? curWinW : winWidth_;
             winHeight_ = curWinH > 0 ? curWinH : winHeight_;
-            camera_.setViewport(fbWidth_, fbHeight_);
         }
 
-        glViewport(0, 0, fbWidth_, fbHeight_);
-        glClearDepthf(1.0f);
-        glClearColor(0.10f, 0.12f, 0.15f, 1.0f);
-        glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
-
+        // 3D scene into the viewport FBO (sized to the viewport window).
         renderScene();
+
+        // UI (dockspace + windows incl. the viewport image) into the default
+        // framebuffer.
+        glBindFramebuffer(GL_FRAMEBUFFER, 0);
+        glViewport(0, 0, fbWidth_, fbHeight_);
+        glClearColor(0.10f, 0.12f, 0.15f, 1.0f);
+        glClear(GL_COLOR_BUFFER_BIT);
         renderImGui();
 
         glfwSwapBuffers(window_);
@@ -357,16 +371,18 @@ void App::importModel(const std::string& path) {
 void App::handleInput(float dt) {
     ImGuiIO& io = ImGui::GetIO();
 
-    float dpiX = winWidth_  > 0 ? float(fbWidth_)  / float(winWidth_)  : 1.0f;
-    float dpiY = winHeight_ > 0 ? float(fbHeight_) / float(winHeight_) : 1.0f;
-    gizmo_.setDpiScale(dpiX, dpiY);
-    vertexEditor_.setDpiScale(dpiX, dpiY);
+    // Sub-gizmos poll g_input themselves; give them the viewport rect so
+    // their screenToRay math matches cursorRay.
+    gizmo_.setViewportRect(vpWinX_, vpWinY_, vpScaleX_, vpScaleY_);
+    vertexEditor_.setViewportRect(vpWinX_, vpWinY_, vpScaleX_, vpScaleY_);
 
     const bool typing = io.WantTextInput;
     if (!typing && g_input.keyPressed(GLFW_KEY_ESCAPE))
         glfwSetWindowShouldClose(window_, GLFW_TRUE);
 
-    bool overUI = io.WantCaptureMouse;
+    // The mouse is "over UI" for editing purposes unless it's over the 3D
+    // viewport image — docked windows report WantCaptureMouse for everything.
+    bool overUI = io.WantCaptureMouse && !viewportHovered_;
 
     // Camera
     if (g_input.mousePressed(Input::Right))   orbiting_ = !overUI;
@@ -492,6 +508,45 @@ static glm::vec3 strengthColor(float strength) {
                      0.0f);
 }
 
+// Create or resize the viewport FBO to match the viewport window size
+// (window px * DPI scale). Called once per frame from renderScene.
+void App::ensureViewportFbo() {
+    if (!viewportFbo_) {
+        glGenFramebuffers(1, &viewportFbo_);
+        viewportColor_.create();
+        glGenRenderbuffers(1, &viewportDepthRbo_);
+    }
+    if (viewportW_ <= 0 || viewportH_ <= 0) return;   // window not laid out yet
+
+    GLint cw = 0, ch = 0;
+    glBindTexture(GL_TEXTURE_2D, viewportColor_);
+    glGetTexLevelParameteriv(GL_TEXTURE_2D, 0, GL_TEXTURE_WIDTH, &cw);
+    glGetTexLevelParameteriv(GL_TEXTURE_2D, 0, GL_TEXTURE_HEIGHT, &ch);
+    glBindTexture(GL_TEXTURE_2D, 0);
+    if (cw == viewportW_ && ch == viewportH_) return;   // already the right size
+
+    glBindTexture(GL_TEXTURE_2D, viewportColor_);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, viewportW_, viewportH_, 0,
+                 GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    glBindTexture(GL_TEXTURE_2D, 0);
+
+    glBindRenderbuffer(GL_RENDERBUFFER, viewportDepthRbo_);
+    glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH_COMPONENT24,
+                          viewportW_, viewportH_);
+    glBindRenderbuffer(GL_RENDERBUFFER, 0);
+
+    glBindFramebuffer(GL_FRAMEBUFFER, viewportFbo_);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
+                           GL_TEXTURE_2D, viewportColor_, 0);
+    glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT,
+                              GL_RENDERBUFFER, viewportDepthRbo_);
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+}
+
 void App::renderDepthPass(const glm::mat4& lvp) {
     glColorMask(GL_FALSE, GL_FALSE, GL_FALSE, GL_FALSE);
 
@@ -537,6 +592,16 @@ void App::renderDepthPass(const glm::mat4& lvp) {
 }
 
 void App::renderScene() {
+    // Scene renders into the viewport FBO; the UI displays it as an image.
+    ensureViewportFbo();
+    if (viewportW_ <= 0 || viewportH_ <= 0) return;  // not laid out yet
+    glBindFramebuffer(GL_FRAMEBUFFER, viewportFbo_);
+    glViewport(0, 0, viewportW_, viewportH_);
+    glClearColor(0.10f, 0.12f, 0.15f, 1.0f);
+    glClearDepthf(1.0f);
+    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+    camera_.setViewport(viewportW_, viewportH_);
+
     if (wireframe_) glPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
     else            glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
 
@@ -565,8 +630,8 @@ void App::renderScene() {
         glBindFramebuffer(GL_FRAMEBUFFER, shadowFbo_);
         glClear(GL_DEPTH_BUFFER_BIT);
         renderDepthPass(lvp);
-        glBindFramebuffer(GL_FRAMEBUFFER, 0);
-        glViewport(0, 0, fbWidth_, fbHeight_);
+        glBindFramebuffer(GL_FRAMEBUFFER, viewportFbo_);
+        glViewport(0, 0, viewportW_, viewportH_);
 
         glActiveTexture(GL_TEXTURE0 + kShadowTexUnit);
         glBindTexture(GL_TEXTURE_2D, shadowMap_);

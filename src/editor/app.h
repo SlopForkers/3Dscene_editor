@@ -92,7 +92,6 @@ public:
 
     void drawBrushContent();
     void drawVertexContent();
-    void drawPropsContent();
     void drawVegetationContent();
     void drawBuildContent();
     void drawTerrainContent();
@@ -103,6 +102,8 @@ public:
     void drawHistoryContent();
     void drawFileContent();
     void drawHelpOverlay();
+    void drawPropToolContent();
+    void drawInspectorContent();
 
     bool saveScene(const std::string& path);
     bool loadScene(const std::string& path);
@@ -122,6 +123,27 @@ public:
     int  activeCategory_  = CatBrush;
     bool continuousStroke_ = true;
 
+    // Docked window visibility (layout itself persists via imgui.ini).
+    bool showTools_     = true;
+    bool showHierarchy_ = true;
+    bool showInspector_ = true;
+    bool showTerrain_   = false;
+    bool showLayers_    = false;
+    bool showSettings_  = false;
+    bool showHistory_   = false;
+    bool showFile_      = false;
+
+    // 3D viewport window state. The scene renders into viewportFbo_; the
+    // viewport window displays viewportColor_. vpWinX_/vpWinY_/vpScaleX_/Y_
+    // map WINDOW-pixel mouse coords into viewport framebuffer pixels.
+    GLuint    viewportFbo_ = 0;
+    GlTexture viewportColor_;
+    GLuint    viewportDepthRbo_ = 0;
+    int       viewportW_ = 0, viewportH_ = 0;      // FBO size (framebuffer px)
+    float     vpWinX_ = 0.0f, vpWinY_ = 0.0f;      // image pos (window px)
+    float     vpScaleX_ = 1.0f, vpScaleY_ = 1.0f;  // window px -> FBO px
+    bool      viewportHovered_ = false;
+
     // Prop panel transform-edit capture (IsItemActivated/Deactivated pair).
     bool propEditActive_ = false;
     int  propEditId_ = -1;
@@ -139,10 +161,22 @@ private:
     void renderScene();
     void renderDepthPass(const glm::mat4& lvp);
     void renderImGui();
-    void drawLeftPanel();
-    void drawBrushBar();
     void drawSelectionBox();
     void selectCategory(int cat);
+
+    // Docked UI shell.
+    void drawViewportWindow();
+    void drawToolbarWindow();
+    void drawToolsWindow();
+    void drawHierarchyWindow();
+    void drawInspectorWindow();
+    void drawSettingsWindow();
+    void drawTerrainWindow();
+    void drawLayersWindow();
+    void drawHistoryWindow();
+    void drawFileWindow();
+    void buildDefaultLayout(unsigned int dockspaceId);
+    void ensureViewportFbo();
 
     bool orbiting_ = false;
     bool panning_  = false;

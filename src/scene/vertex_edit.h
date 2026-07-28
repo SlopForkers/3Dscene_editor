@@ -53,9 +53,12 @@ public:
     DragMode dragMode() const { return dragMode_; }
     void setDragMode(DragMode m) { dragMode_ = m; }
 
-    // Mouse coordinates are in WINDOW pixels, the camera viewport is in
-    // FRAMEBUFFER pixels; on HiDPI displays the ratio != 1. Set per frame.
-    void setDpiScale(float sx, float sy) { dpiScaleX_ = sx; dpiScaleY_ = sy; }
+    // Mouse coordinates are in WINDOW pixels; the scene lives in the viewport
+    // window's FBO. (winX, winY) = image top-left in window px, scales map
+    // window px -> FBO px. Set once per frame.
+    void setViewportRect(float winX, float winY, float scaleX, float scaleY) {
+        vpOffX_ = winX; vpOffY_ = winY; vpScaleX_ = scaleX; vpScaleY_ = scaleY;
+    }
 
 private:
     struct Cell { int ix, iz; };
@@ -67,7 +70,8 @@ private:
     bool dragging_  = false;
     int  activeAxis_ = -1;     // 0=X,1=Y,2=Z, 3=normal
     int  hoverAxis_  = -1;
-    float dpiScaleX_ = 1.0f, dpiScaleY_ = 1.0f;
+    float vpOffX_ = 0.0f, vpOffY_ = 0.0f;
+    float vpScaleX_ = 1.0f, vpScaleY_ = 1.0f;
 
     // Saved at drag start.
     float startCenterY_ = 0.0f;

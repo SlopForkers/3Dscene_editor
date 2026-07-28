@@ -19,8 +19,11 @@ cmake --build build --config Release
 ```
 
 - The app loads shaders from `<cwd>/shaders` — run it from `build/bin`.
-- Dependencies are FetchContent'd (GLFW 3.4, GLM 1.0.3, ImGui v1.91.5,
-  cgltf v1.15, stb — pinned commit, nlohmann_json v3.11.3, doctest v2.4.11).
+- Dependencies are FetchContent'd (GLFW 3.4, GLM 1.0.3,
+  ImGui v1.92.5-**docking**, cgltf v1.15, stb — pinned commit,
+  nlohmann_json v3.11.3, doctest v2.4.11). Docking + multi-viewport are NOT
+  in mainline ImGui 1.9x — the `vX.Y.Z-docking` branch tag is required
+  (`ImGuiConfigFlags_DockingEnable` doesn't exist in plain v1.92.x).
   GLAD2 is vendored in `external/glad/`. doctest's legacy
   `cmake_minimum_required(3.0)` needs the `CMAKE_POLICY_VERSION_MINIMUM`
   escape hatch in CMakeLists (expect one harmless upstream warning).
@@ -38,8 +41,8 @@ src/
  │   ├─ main.cpp ................. entry point
  │   ├─ app.cpp / app.h .......... core loop, init/shutdown, input dispatch, render
  │   ├─ tools.cpp/h .............. ITool + TerrainTool/PropTool/VertexTool/BuildTool
- │   ├─ app_ui.cpp ............... ImGui frame, left rail, brush bar, help
- │   ├─ app_panels.cpp ........... one draw*Content() per rail category
+ │   ├─ app_ui.cpp ............... dockspace shell, viewport/toolbar windows, help
+ │   ├─ app_panels.cpp ........... one draw*Content() per dock window
  │   ├─ ui_icons.cpp/h ........... ImDrawList vector icons
  │   └─ ui_common.h .............. shared UI name helpers
  ├─ scene/ (subsystems – no UI knowledge)
@@ -73,6 +76,19 @@ src/
 a subsystem class in `scene/` + a `draw*Content()` panel in `editor/` +
 wiring in `App::handleInput` / `renderScene`.
 
+**UI shell (ImGui docking branch)**: the scene renders into `viewportFbo_`
+(sized to the "Viewport" window's content rect); `renderImGui()` draws a
+full-window `DockSpaceOverViewport` + docked windows — Viewport (FBO image),
+Toolbar (tool/panel/brush icon strip), Tools (active tool's `draw*Content()`),
+Hierarchy (props/blocks/layers with selection), Inspector
+(`drawInspectorContent` = selection properties), plus toggleable Terrain /
+Layers / Skybox·Settings / History / File windows. The default layout is
+built once via `buildDefaultLayout()` (DockBuilder lives in
+`imgui_internal.h`); afterwards the layout persists through `imgui.ini`
+(default `io.IniFilename`). Multi-viewport is enabled: torn-out windows get
+their own OS window via `ImGui::UpdatePlatformWindows()` +
+`RenderPlatformWindowsDefault()` at the end of `renderImGui()`.
+
 **Tools**: `App::handleInput` dispatches to `activeTool_` (an `ITool*`
 pointing at one of the four tool structs in `tools.h`). Each tool owns its
 drag state (e.g. `BuildTool::buildDragging_`); `cancelDrag()` must leave no
@@ -89,12 +105,12 @@ lives in.
 
 1. `Input::newFrame()` → `glfwPollEvents()` (callbacks accumulate deltas).
 2. `App::handleInput(dt)` — hotkeys, camera, then `activeTool_->handleInput`.
-3. `renderScene()` — **shadow depth pass** (skipped when `showShadows_` off):
-   light-ortho VP → `renderDepthPass()` re-renders terrain/props/details/
-   blocks into the 2048² depth FBO with color writes off → then main pass:
-   skybox → terrain → props → details → blocks → ghost/drag previews →
-   selection boxes → gizmos → brush cursor.
-4. `renderImGui()` — left rail panel + brush bar + help overlay.
+3. `renderScene()` — into the viewport FBO (`viewportFbo_`, sized by the
+   Viewport window on the previous frame): **shadow depth pass** (skipped
+   when `showShadows_` off) → main pass: skybox → terrain → props → details
+   → blocks → ghost/drag previews → selection boxes → gizmos → brush cursor.
+4. `renderImGui()` — dockspace + docked windows (incl. the Viewport image)
+   into the default framebuffer, then platform windows (multi-viewport).
 
 ### Conventions that matter (violations caused real bugs)
 
@@ -105,9 +121,21 @@ lives in.
 - **Shaders**: no uniform initializers (GLSL 330). Every uniform must be set
   explicitly by the caller each frame — `line.frag`'s `uAlpha` is the
   canonical example.
-- **HiDPI**: mouse coords from `Input` are in *window* pixels; the camera
-  viewport is in *framebuffer* pixels. Use `App::cursorRay()`; sub-gizmos
-  get the ratio via `setDpiScale()` once per frame (`App::handleInput`).
+- **HiDPI + viewport window**: mouse coords from `Input` are in *window*
+  pixels relative to the main window; the scene viewport is the Viewport
+  window's FBO in *framebuffer* pixels. Use `App::cursorRay()`; sub-gizmos
+  get the rect via `setViewportRect()` once per frame (`App::handleInput`).
+  The mapping (image pos + scale) is captured in `drawViewportWindow()`.
+- **Input gating with docking**: `io.WantCaptureMouse` is true over EVERY
+  docked window (including the Viewport) — never gate tool input on it
+  directly. The authoritative flag is App's `overUI = WantCaptureMouse &&
+  !viewportHovered_`; scene-layer classes (Gizmo, VertexEditor) receive it
+  as a parameter. Scene picking is disabled while the Viewport window is
+  torn out into its own OS window (mouse coords don't map).
+- **ImGui version pitfalls**: DockBuilder* (`buildDefaultLayout`) lives in
+  `imgui_internal.h`, not `imgui.h`. 1.92 changed `ImTextureID` to `ImU64`
+  and reworked `ImFontAtlas` (no custom fonts here — icons are ImDrawList
+  vectors — so the font rework is a no-op for us).
 - **Hotkeys**: global shortcuts must be gated on `!ImGui::GetIO().WantTextInput`
   (see `App::handleInput`), or they fire while typing into text fields.
 - **Drag state**: captured at mouse-press (e.g. `buildDragErase_`), never
@@ -157,8 +185,10 @@ Single binary file: `"SCNE"` magic + version + JSON metadata + heights blob
 ## Common tasks
 
 - **New brush type**: `Terrain::BrushParams::Type` + `applyBrush` branch +
-  icon in `ui_icons.cpp` + entry in `brushTypeName` + brush bar/hotkeys.
-- **New rail panel**: `App::Category` enum + `draw*Content()` in
-  `app_panels.cpp` + icon + `catIcon`/`catName` + switch in `drawLeftPanel`.
+  icon in `ui_icons.cpp` + entry in `brushTypeName` + toolbar brush section/
+  hotkeys.
+- **New dock window**: `show*` flag + `draw*Window()` wrapper in
+  `app_ui.cpp` + `draw*Content()` in `app_panels.cpp` + toggle cell in
+  `drawToolbarWindow` + `DockBuilderDockWindow` in `buildDefaultLayout`.
 - **New uniform**: no registration needed; `Shader::set*` caches locations.
   Remember to set it every frame (no initializers in GLSL).

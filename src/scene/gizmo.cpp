@@ -147,8 +147,8 @@ static bool rayPlane(const glm::vec3& ro, const glm::vec3& rd,
 }
 
 void Gizmo::mouseRay(const Camera& cam, glm::vec3& outOrigin, glm::vec3& outDir) const {
-    float sx = (float)g_input.mouseX() * dpiScaleX_;
-    float sy = (float)g_input.mouseY() * dpiScaleY_;
+    float sx = ((float)g_input.mouseX() - vpOffX_) * vpScaleX_;
+    float sy = ((float)g_input.mouseY() - vpOffY_) * vpScaleY_;
     cam.screenToRay(sx, sy, outOrigin, outDir);
     outDir = glm::normalize(outDir);
 }
@@ -195,9 +195,8 @@ bool Gizmo::pickRing(const Camera& cam, const glm::vec3& pos, float size, int& o
 
 bool Gizmo::handleInput(const Camera& cam, const glm::vec3& pos,
                         const Transform& current, Transform& outNew,
-                        const ImGuiIO& io) {
+                        bool overUI) {
     outNew = current;
-    bool overUI = io.WantCaptureMouse;
 
     // End any active drag on release.
     if (dragging_ && g_input.mouseReleased(Input::Left)) {
