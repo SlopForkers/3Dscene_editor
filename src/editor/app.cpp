@@ -365,7 +365,11 @@ void App::importModel(const std::string& path) {
     float h = terrain_.heightAtWorld(spawn.x, spawn.z);
     std::filesystem::path fp(path);
     props_.addProp(model, spawn, h, propTargetSize_, fp.filename().string());
+    // Switch to the prop tool fully — toolMode_ alone would draw the gizmo
+    // while a different activeTool_ still owns the input.
     toolMode_ = ToolProp;
+    activeCategory_ = CatProps;
+    activeTool_ = &propTool_;
 }
 
 void App::handleInput(float dt) {

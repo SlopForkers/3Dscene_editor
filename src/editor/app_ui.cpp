@@ -204,10 +204,13 @@ void App::drawToolbarWindow() {
     const float indent = std::max(0.0f, (availW - cell) * 0.5f);
 
     // Each cell is a real layout item (InvisibleButton) — it grows the window
-    // content rect — with the icon drawn over its rect afterwards.
+    // content rect — with the icon drawn over its rect afterwards. IDs are a
+    // running counter, NOT the tooltip: tooltips are display labels and can
+    // collide ("Vegetation" the tool vs "Vegetation" the brush type).
+    int cellId = 0;
     auto iconCell = [&](icons::IconFn fn, const char* tooltip, bool active) {
         ImGui::SetCursorPosX(ImGui::GetCursorPosX() + indent);
-        ImGui::PushID(tooltip);
+        ImGui::PushID(cellId++);
         ImGui::InvisibleButton("##cell", ImVec2(cell, cell));
         ImGui::PopID();
         ImVec2 p0 = ImGui::GetItemRectMin(), p1 = ImGui::GetItemRectMax();
@@ -418,8 +421,12 @@ void App::selectCategory(int cat) {
 }
 
 void App::drawHelpOverlay() {
-    ImGui::SetNextWindowPos(ImVec2(ImGui::GetIO().DisplaySize.x - 290, 10),
-                            ImGuiCond_FirstUseEver);
+    // Centred on first use. The position must be inside the main viewport
+    // even while the auto-sized window grows from zero — a window crossing
+    // the viewport edge is torn out into its own OS window by multi-viewport.
+    const ImVec2 ds = ImGui::GetIO().DisplaySize;
+    ImGui::SetNextWindowPos(ImVec2(ds.x * 0.5f, ds.y * 0.5f),
+                            ImGuiCond_FirstUseEver, ImVec2(0.5f, 0.5f));
     ImGui::Begin("Help", &showHelp_,
                  ImGuiWindowFlags_NoResize | ImGuiWindowFlags_AlwaysAutoResize |
                  ImGuiWindowFlags_NoCollapse);

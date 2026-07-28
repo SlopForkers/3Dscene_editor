@@ -135,7 +135,14 @@ lives in.
 - **ImGui version pitfalls**: DockBuilder* (`buildDefaultLayout`) lives in
   `imgui_internal.h`, not `imgui.h`. 1.92 changed `ImTextureID` to `ImU64`
   and reworked `ImFontAtlas` (no custom fonts here — icons are ImDrawList
-  vectors — so the font rework is a no-op for us).
+  vectors — so the font rework is a no-op for us). 1.92 also highlights
+  duplicate IDs with a big red banner — never use display labels as
+  PushID strings (a tool and a brush type can share a name).
+- **Torn-out windows**: a floating ImGui window that crosses the main
+  viewport edge is automatically moved into its own OS window — initial
+  placements must provably fit (auto-sized windows grow from 0, so anchor
+  by centre). A torn-out OS window owns the keyboard focus while active:
+  all app hotkeys (GLFW callbacks on the main window) go dead.
 - **Hotkeys**: global shortcuts must be gated on `!ImGui::GetIO().WantTextInput`
   (see `App::handleInput`), or they fire while typing into text fields.
 - **Drag state**: captured at mouse-press (e.g. `buildDragErase_`), never
