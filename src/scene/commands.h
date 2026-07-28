@@ -4,6 +4,7 @@
 #include "build.h"
 #include "detail.h"
 #include "terrain.h"
+#include "scene_camera.h"
 #include <glm/glm.hpp>
 #include <array>
 #include <string>
@@ -262,6 +263,72 @@ private:
     Terrain* terrain_;
     int index_;
     bool isNormal_;
+};
+
+// Scene camera added / removed. Stores the full camera so ids survive
+// undo/redo; also remembers whether it was the active (initial) camera.
+class CameraCommand : public Command {
+public:
+    CameraCommand(CameraRig& rig, const SceneCamera& c, bool addedByUser,
+                  const char* name)
+        : rig_(&rig), cam_(c), added_(addedByUser),
+          wasActive_(rig.activeId() == c.id), name_(name) {}
+
+    void redo() override {
+        if (added_) restore();
+        else rig_->removeCamera(cam_.id);
+    }
+    void undo() override {
+        if (added_) rig_->removeCamera(cam_.id);
+        else restore();
+    }
+    size_t memoryBytes() const override {
+        return sizeof(*this) + cam_.name.size() + cam_.tag.size();
+    }
+    const char* name() const override { return name_; }
+
+private:
+    void restore() {
+        rig_->addCameraWithId(cam_);
+        if (wasActive_) rig_->setActive(cam_.id);
+    }
+
+    CameraRig* rig_;
+    SceneCamera cam_;
+    bool added_;
+    bool wasActive_;
+    const char* name_;
+};
+
+// Scene camera metadata/transform edit (panel widgets). Merges consecutive
+// edits of the same camera so slider drags don't flood the stack.
+class CameraEditCommand : public Command {
+public:
+    CameraEditCommand(CameraRig& rig, int id,
+                      const SceneCamera& before, const SceneCamera& after)
+        : rig_(&rig), id_(id), before_(before), after_(after) {}
+
+    void redo() override { apply(after_); }
+    void undo() override { apply(before_); }
+    bool merge(const Command& next) override;
+    size_t memoryBytes() const override {
+        return sizeof(*this) + before_.name.size() + before_.tag.size() +
+               after_.name.size() + after_.tag.size();
+    }
+    const char* name() const override { return "Edit Camera"; }
+
+private:
+    void apply(const SceneCamera& v) {
+        SceneCamera* c = rig_->findCamera(id_);
+        if (!c) return;
+        int id = c->id;
+        *c = v;
+        c->id = id;   // id is the command's key — never let it drift
+    }
+
+    CameraRig* rig_;
+    int id_;
+    SceneCamera before_, after_;
 };
 
 // Splat reset (clear to layer 0).

@@ -2,6 +2,7 @@
 #include "terrain.h"
 #include "skybox.h"
 #include "camera.h"
+#include "scene_camera.h"
 #include "prop.h"
 #include "detail.h"
 #include "build.h"
@@ -93,6 +94,27 @@ bool saveScene(const std::string& path, const SceneContext& ctx) {
     cam["pitch"] = ctx.camera.pitch();
     cam["distance"] = ctx.camera.distance();
     root["camera"] = cam;
+
+    // Scene cameras (game reads these; id is the stable key).
+    nlohmann::json camsArr = nlohmann::json::array();
+    for (const auto& c : ctx.cameraRig.cameras()) {
+        nlohmann::json sc = nlohmann::json::object();
+        sc["id"]   = c.id;
+        sc["name"] = c.name;
+        sc["tag"]  = c.tag;
+        sc["px"] = c.position.x;
+        sc["py"] = c.position.y;
+        sc["pz"] = c.position.z;
+        sc["tx"] = c.target.x;
+        sc["ty"] = c.target.y;
+        sc["tz"] = c.target.z;
+        sc["fov"]  = c.fov;
+        sc["near"] = c.nearPlane;
+        sc["far"]  = c.farPlane;
+        camsArr.push_back(sc);
+    }
+    root["cameras"] = camsArr;
+    root["activeCamera"] = ctx.cameraRig.activeId();
 
     // Props.
     nlohmann::json propsArr = nlohmann::json::array();
@@ -349,6 +371,7 @@ bool loadScene(const std::string& path, SceneContext& ctx) {
     ctx.details.clearInstances();
     ctx.details.clearPrototypes();
     ctx.build.clear();
+    ctx.cameraRig.clear();
     ctx.modelLibrary.clear();
     ctx.selectedBlockId = -1;
     ctx.selectedBlockFace = -1;
@@ -451,6 +474,34 @@ bool loadScene(const std::string& path, SceneContext& ctx) {
                 ctx.build.setBlockTexMode(id, tm);
             }
         }
+    }
+
+    // --- Scene cameras ---
+    const auto& cams = root["cameras"];
+    if (cams.is_array()) {
+        for (size_t i = 0; i < cams.size(); ++i) {
+            const auto& sc = cams[i];
+            SceneCamera c;
+            c.name = sc.value("name", "Camera");
+            c.tag  = sc.value("tag", "");
+            c.position = glm::vec3(sc.value("px", 0.0f), sc.value("py", 10.0f),
+                                   sc.value("pz", -10.0f));
+            c.target   = glm::vec3(sc.value("tx", 0.0f), sc.value("ty", 0.0f),
+                                   sc.value("tz", 0.0f));
+            c.fov       = std::clamp(sc.value("fov", 60.0f), 1.0f, 179.0f);
+            c.nearPlane = std::max(sc.value("near", 0.1f), 1e-4f);
+            c.farPlane  = std::max(sc.value("far", 500.0f), c.nearPlane * 2.0f);
+            // Keep the saved id when it is usable; a missing/duplicate id
+            // gets a fresh one rather than breaking the stable-key contract.
+            int savedId = sc.value("id", -1);
+            if (savedId >= 0 && !ctx.cameraRig.findCamera(savedId)) {
+                c.id = savedId;
+                ctx.cameraRig.addCameraWithId(c);
+            } else {
+                ctx.cameraRig.addCamera(c);
+            }
+        }
+        ctx.cameraRig.setActive(root.value("activeCamera", -1));
     }
 
     return true;

@@ -6,6 +6,7 @@
 class Terrain;
 class Skybox;
 class Camera;
+class CameraRig;
 class PropManager;
 class DetailSystem;
 class BuildSystem;
@@ -16,6 +17,7 @@ struct SceneContext {
     Terrain& terrain;
     Skybox& skybox;
     Camera& camera;
+    CameraRig& cameraRig;
     PropManager& props;
     DetailSystem& details;
     BuildSystem& build;

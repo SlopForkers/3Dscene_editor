@@ -11,6 +11,7 @@
 #include "vertex_edit.h"
 #include "detail.h"
 #include "build.h"
+#include "scene_camera.h"
 #include "gl_resource.h"
 #include "tools.h"
 #include "history.h"
@@ -33,6 +34,7 @@ public:
         CatTerrain, CatNoise, CatLayers, CatEnv, CatView,
         CatHistory,
         CatFile,
+        CatCameras, CatCamView,
         CatCount
     };
 
@@ -56,6 +58,8 @@ public:
     PropManager props_;
     DetailSystem details_;
     BuildSystem build_;
+    CameraRig cameraRig_;
+    int selectedCameraId_ = -1;
     History history_;
     std::vector<std::shared_ptr<Model>> modelLibrary_;
     Noise::Params noiseParams_;
@@ -104,6 +108,14 @@ public:
     void drawHelpOverlay();
     void drawPropToolContent();
     void drawInspectorContent();
+    void drawCamerasContent();
+    void drawCameraViewContent();
+
+    // Scene camera interaction: jump the editor orbit camera to a scene
+    // camera's pose; cycle steps through the rig ([ / ] hotkeys).
+    void activateSceneCamera(int id);
+    void cycleSceneCamera(int dir);
+    void markCamPreviewsStale();
 
     bool saveScene(const std::string& path);
     bool loadScene(const std::string& path);
@@ -132,6 +144,12 @@ public:
     bool showSettings_  = false;
     bool showHistory_   = false;
     bool showFile_      = false;
+    bool showCameras_   = false;
+    bool showCameraView_= false;
+
+    // Scene cameras: frustum visualisation + preview window options.
+    bool showCamFrustums_ = true;
+    bool camPreviewsLive_ = true;
 
     // 3D viewport window state. The scene renders into viewportFbo_; the
     // viewport window displays viewportColor_. vpWinX_/vpWinY_/vpScaleX_/Y_
@@ -151,6 +169,11 @@ public:
     glm::vec3 propEditRot_   = glm::vec3(0.0f);
     glm::vec3 propEditScale_ = glm::vec3(1.0f);
 
+    // Camera panel edit capture (same Activated/Deactivated pattern).
+    bool camEditActive_ = false;
+    int  camEditId_ = -1;
+    SceneCamera camEditBefore_;
+
 private:
     bool initWindow();
     bool initOpenGL();
@@ -159,10 +182,34 @@ private:
 
     void handleInput(float dt);
     void renderScene();
+    // The shadow + skybox + terrain + props + details + blocks passes,
+    // parameterised so both the main viewport and camera previews can use it.
+    // The target FBO must be bound and cleared by the caller.
+    void renderWorld(const glm::mat4& view, const glm::mat4& proj,
+                     const glm::vec3& camPos, const glm::vec3& shadowCenter,
+                     GLuint targetFbo, int targetW, int targetH,
+                     bool withShadows);
     void renderDepthPass(const glm::mat4& lvp);
     void renderImGui();
     void drawSelectionBox();
+    void drawCameraFrustums(const glm::mat4& vp);
     void selectCategory(int cat);
+
+    // Camera preview window: small per-camera FBOs, rendered one camera per
+    // frame (round-robin) — never all cameras in a single frame.
+    struct CamPreview {
+        GLuint fbo = 0;
+        GLuint depthRbo = 0;
+        GlTexture color;
+        bool stale = true;
+    };
+    static constexpr int kCamPreviewW = 256;
+    static constexpr int kCamPreviewH = 144;
+    std::vector<CamPreview> camPreviews_;
+    size_t camPreviewCursor_ = 0;
+    void updateCameraPreviews();
+    void ensureCamPreviewFbos();
+    void renderCameraPreview(const SceneCamera& cam, CamPreview& pv);
 
     // Docked UI shell.
     void drawViewportWindow();
@@ -175,6 +222,8 @@ private:
     void drawLayersWindow();
     void drawHistoryWindow();
     void drawFileWindow();
+    void drawCamerasWindow();
+    void drawCameraViewWindow();
     void buildDefaultLayout(unsigned int dockspaceId);
     void ensureViewportFbo();
 

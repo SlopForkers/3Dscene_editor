@@ -53,6 +53,7 @@ src/
  │   ├─ prop.cpp/h ............... placed prop instances + selection
  │   ├─ detail.cpp/h ............. instanced vegetation
  │   ├─ build.cpp/h .............. snap-based blocks + face textures
+ │   ├─ scene_camera.cpp/h ....... SceneCamera (id/name/tag/pose/fov) + CameraRig
  │   ├─ skybox.cpp/h ............. cubemap sky + equirect→cubemap
  │   ├─ gizmo.cpp/h .............. translate/rotate/scale manipulator
  │   ├─ scene.cpp/h .............. App::saveScene/loadScene wrappers (format: scene.h)
@@ -106,9 +107,13 @@ lives in.
 1. `Input::newFrame()` → `glfwPollEvents()` (callbacks accumulate deltas).
 2. `App::handleInput(dt)` — hotkeys, camera, then `activeTool_->handleInput`.
 3. `renderScene()` — into the viewport FBO (`viewportFbo_`, sized by the
-   Viewport window on the previous frame): **shadow depth pass** (skipped
-   when `showShadows_` off) → main pass: skybox → terrain → props → details
-   → blocks → ghost/drag previews → selection boxes → gizmos → brush cursor.
+   Viewport window on the previous frame): `renderWorld()` (**shadow depth
+   pass**, skipped when `showShadows_` off → main pass: skybox → terrain →
+   props → details → blocks) → editor-only overlays: ghost/drag previews →
+   selection boxes → gizmos → brush cursor → camera frustums.
+   `updateCameraPreviews()` then renders at most ONE scene-camera thumbnail
+   (256x144 FBO, round-robin) — never all cameras in a single frame;
+   previews call `renderWorld` with shadows off.
 4. `renderImGui()` — dockspace + docked windows (incl. the Viewport image)
    into the default framebuffer, then platform windows (multi-viewport).
 
@@ -145,6 +150,10 @@ lives in.
   all app hotkeys (GLFW callbacks on the main window) go dead.
 - **Hotkeys**: global shortcuts must be gated on `!ImGui::GetIO().WantTextInput`
   (see `App::handleInput`), or they fire while typing into text fields.
+- **Scene cameras**: `CameraRig` ids are the game's stable key — never reuse
+  one (`addCameraWithId` for undo/load). The active id is the game's initial
+  camera. Editor jump-to-pose inverts the orbit parameterisation
+  (`App::activateSceneCamera`); cycling hotkeys are `[`/`]`.
 - **Drag state**: captured at mouse-press (e.g. `buildDragErase_`), never
   re-read modifiers at release. Tool switches (Tab/category click) must
   cancel in-progress drags (`Gizmo::cancelDrag`, `VertexEditor::cancelDrag`,

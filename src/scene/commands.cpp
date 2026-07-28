@@ -145,6 +145,18 @@ bool PropTransformCommand::merge(const Command& next) {
 }
 
 // ============================================================================
+// CameraEditCommand
+// ============================================================================
+
+bool CameraEditCommand::merge(const Command& next) {
+    auto* n = dynamic_cast<const CameraEditCommand*>(&next);
+    if (!n || n->id_ != id_) return false;
+    // Keep our before_, take the newer after_.
+    after_ = n->after_;
+    return true;
+}
+
+// ============================================================================
 // BlockTextureCommand
 // ============================================================================
 

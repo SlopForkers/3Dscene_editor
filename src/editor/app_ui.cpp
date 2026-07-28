@@ -59,6 +59,8 @@ void App::renderImGui() {
     drawLayersWindow();
     drawHistoryWindow();
     drawFileWindow();
+    drawCamerasWindow();
+    drawCameraViewWindow();
     if (showHelp_) drawHelpOverlay();
 
     // Brush value overlay: show radius/strength over the viewport image while
@@ -133,6 +135,9 @@ void App::buildDefaultLayout(unsigned int dockspaceId) {
     ImGui::DockBuilderDockWindow("Tools", dockTools);
     ImGui::DockBuilderDockWindow("Hierarchy", dockHierarchy);
     ImGui::DockBuilderDockWindow("Inspector", dockRight);
+    // Camera View shares the centre node with the Viewport; docking it first
+    // keeps the Viewport the visible tab.
+    ImGui::DockBuilderDockWindow("Camera View", remaining);
     ImGui::DockBuilderDockWindow("Viewport", remaining);
     // Hidden-by-default windows get sensible homes for when they are shown.
     ImGui::DockBuilderDockWindow("Terrain", dockTools);
@@ -140,6 +145,7 @@ void App::buildDefaultLayout(unsigned int dockspaceId) {
     ImGui::DockBuilderDockWindow("File", dockTools);
     ImGui::DockBuilderDockWindow("Skybox/Settings", dockRight);
     ImGui::DockBuilderDockWindow("History", dockRight);
+    ImGui::DockBuilderDockWindow("Cameras", dockHierarchy);
     ImGui::DockBuilderFinish(id);
 }
 
@@ -246,11 +252,13 @@ void App::drawToolbarWindow() {
     // --- Panel toggles ---
     struct PanelToggle { int cat; const char* name; bool* flag; };
     PanelToggle panels[] = {
-        { CatTerrain, "Terrain",          &showTerrain_  },
-        { CatLayers,  "Layers",           &showLayers_   },
-        { CatEnv,     "Skybox/Settings",  &showSettings_ },
-        { CatHistory, "History",          &showHistory_  },
-        { CatFile,    "File",             &showFile_     },
+        { CatTerrain, "Terrain",          &showTerrain_   },
+        { CatLayers,  "Layers",           &showLayers_    },
+        { CatEnv,     "Skybox/Settings",  &showSettings_  },
+        { CatHistory, "History",          &showHistory_   },
+        { CatFile,    "File",             &showFile_      },
+        { CatCameras, "Cameras",          &showCameras_   },
+        { CatCamView, "Camera View",      &showCameraView_},
     };
     for (auto& p : panels) {
         if (iconCell(icons::catIcon(p.cat), p.name, *p.flag))
@@ -330,6 +338,31 @@ void App::drawHierarchyWindow() {
             }
         }
 
+        // --- Scene cameras ---
+        char camHdr[48];
+        std::snprintf(camHdr, sizeof(camHdr), "Cameras (%d)",
+                      (int)cameraRig_.cameras().size());
+        if (ImGui::CollapsingHeader(camHdr)) {
+            if (cameraRig_.cameras().empty())
+                ImGui::TextDisabled("(none — Cameras panel)");
+            for (const auto& c : cameraRig_.cameras()) {
+                // String IDs: prop/block int IDs share this window's ID stack.
+                ImGui::PushID(("cam" + std::to_string(c.id)).c_str());
+                char lbl[160];
+                std::snprintf(lbl, sizeof(lbl), "%s%s", c.name.c_str(),
+                              c.id == cameraRig_.activeId() ? " [active]" : "");
+                if (ImGui::Selectable(lbl, c.id == selectedCameraId_,
+                                      ImGuiSelectableFlags_AllowDoubleClick)) {
+                    selectedCameraId_ = c.id;
+                    showCameras_ = true;
+                }
+                if (ImGui::IsItemHovered() &&
+                    ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left))
+                    activateSceneCamera(c.id);
+                ImGui::PopID();
+            }
+        }
+
         // --- Terrain texture layers ---
         if (ImGui::CollapsingHeader("Texture Layers")) {
             for (int i = 0; i < terrain_.layerCount(); ++i) {
@@ -395,6 +428,20 @@ void App::drawFileWindow() {
     if (!showFile_) return;
     if (ImGui::Begin("File", &showFile_))
         drawFileContent();
+    ImGui::End();
+}
+
+void App::drawCamerasWindow() {
+    if (!showCameras_) return;
+    if (ImGui::Begin("Cameras", &showCameras_))
+        drawCamerasContent();
+    ImGui::End();
+}
+
+void App::drawCameraViewWindow() {
+    if (!showCameraView_) return;
+    if (ImGui::Begin("Camera View", &showCameraView_))
+        drawCameraViewContent();
     ImGui::End();
 }
 
@@ -482,6 +529,8 @@ void App::drawHelpOverlay() {
     }
     ImGui::Separator();
     ImGui::BulletText("F: wireframe   H: help");
+    if (!cameraRig_.cameras().empty())
+        ImGui::BulletText("[ / ]: cycle scene cameras");
     ImGui::BulletText("ESC: quit");
     ImGui::Separator();
     if (toolMode_ == ToolPaint) {

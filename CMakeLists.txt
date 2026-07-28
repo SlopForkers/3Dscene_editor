@@ -152,6 +152,8 @@ set(SOURCES
     src/scene/scene.cpp
     src/scene/scene_io.cpp
     src/scene/scene_io.h
+    src/scene/scene_camera.cpp
+    src/scene/scene_camera.h
     src/scene/history.cpp
     src/scene/history.h
     src/scene/commands.cpp
@@ -226,7 +228,9 @@ if(BUILD_TESTS)
         tests/test_main.cpp
         tests/test_noise.cpp
         tests/test_history.cpp
+        tests/test_scene_camera.cpp
         ${CMAKE_SOURCE_DIR}/src/scene/history.cpp
+        ${CMAKE_SOURCE_DIR}/src/scene/scene_camera.cpp
     )
     target_include_directories(tests PRIVATE
         ${CMAKE_SOURCE_DIR}/src

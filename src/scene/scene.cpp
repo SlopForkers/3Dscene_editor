@@ -6,6 +6,7 @@ bool App::saveScene(const std::string& path) {
         terrain_,
         skybox_,
         camera_,
+        cameraRig_,
         props_,
         details_,
         build_,
@@ -25,6 +26,7 @@ bool App::loadScene(const std::string& path) {
         terrain_,
         skybox_,
         camera_,
+        cameraRig_,
         props_,
         details_,
         build_,
@@ -39,6 +41,10 @@ bool App::loadScene(const std::string& path) {
     bool ok = ::loadScene(path, ctx);
     // Commands captured against the previous scene would resurrect stale
     // state — the new scene starts with a clean history.
-    if (ok) history_.clear();
+    if (ok) {
+        history_.clear();
+        selectedCameraId_ = -1;
+        markCamPreviewsStale();
+    }
     return ok;
 }

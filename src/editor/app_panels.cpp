@@ -944,7 +944,203 @@ void App::drawFileContent() {
 
     ImGui::Separator();
     ImGui::TextWrapped("Single binary .scene file: magic + JSON metadata + "
-                       "heights + splat, with props/blocks/details embedded in JSON. "
+                       "heights + splat, with props/blocks/details/cameras "
+                       "embedded in JSON. "
                        "Asset paths are stored relative to the scene file.");
+}
+
+// --------------------------------------------------------------------------
+// Scene cameras.
+
+static bool sameCamera(const SceneCamera& a, const SceneCamera& b) {
+    return a.name == b.name && a.tag == b.tag &&
+           a.position == b.position && a.target == b.target &&
+           a.fov == b.fov && a.nearPlane == b.nearPlane && a.farPlane == b.farPlane;
+}
+
+void App::drawCamerasContent() {
+    ImGui::TextDisabled("Scene cameras");
+    ImGui::Separator();
+
+    if (ImGui::Button("Add from current view")) {
+        SceneCamera c;
+        c.name = "Camera " + std::to_string(cameraRig_.cameras().size() + 1);
+        c.position = camera_.position();
+        c.target   = camera_.target();
+        c.fov      = camera_.fov();
+        int id = cameraRig_.addCamera(c);
+        // Fetch AFTER addCamera: the vector push_back may have reallocated.
+        const SceneCamera* added = cameraRig_.findCamera(id);
+        if (added) {
+            history_.push(std::make_unique<CameraCommand>(
+                cameraRig_, *added, true, "Add Camera"));
+            selectedCameraId_ = id;
+            // The first camera becomes the game's initial camera by default.
+            if (cameraRig_.cameras().size() == 1) cameraRig_.setActive(id);
+            markCamPreviewsStale();
+        }
+    }
+    ImGui::SameLine();
+    ImGui::Checkbox("Frustums", &showCamFrustums_);
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Draw camera frustums in the viewport");
+
+    if (cameraRig_.cameras().empty()) {
+        ImGui::TextDisabled("(no cameras yet)");
+        return;
+    }
+    ImGui::TextDisabled("[ / ]: cycle cameras; double-click: view through");
+
+    for (const auto& c : cameraRig_.cameras()) {
+        ImGui::PushID(c.id);
+        char lbl[160];
+        std::snprintf(lbl, sizeof(lbl), "%s%s  (#%d)", c.name.c_str(),
+                      c.id == cameraRig_.activeId() ? " [active]" : "", c.id);
+        if (ImGui::Selectable(lbl, c.id == selectedCameraId_,
+                              ImGuiSelectableFlags_AllowDoubleClick))
+            selectedCameraId_ = c.id;
+        if (ImGui::IsItemHovered() &&
+            ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left))
+            activateSceneCamera(c.id);
+        ImGui::PopID();
+    }
+
+    SceneCamera* sel = cameraRig_.findCamera(selectedCameraId_);
+    if (!sel) {
+        selectedCameraId_ = -1;   // stale selection (undo / scene load)
+        return;
+    }
+    ImGui::Separator();
+
+    // Undo capture for widget edits: snapshot on activation, push on
+    // deactivation-after-edit. CameraEditCommand::merge coalesces drags.
+    auto trackWidget = [&]() {
+        if (ImGui::IsItemActivated() && !camEditActive_) {
+            camEditActive_ = true;
+            camEditId_     = sel->id;
+            camEditBefore_ = *sel;
+        }
+        if (ImGui::IsItemDeactivatedAfterEdit() && camEditActive_) {
+            SceneCamera* p = cameraRig_.findCamera(camEditId_);
+            if (p && !sameCamera(*p, camEditBefore_)) {
+                history_.push(std::make_unique<CameraEditCommand>(
+                    cameraRig_, camEditId_, camEditBefore_, *p));
+                markCamPreviewsStale();
+            }
+            camEditActive_ = false;
+        }
+    };
+
+    char nm[64];
+    std::snprintf(nm, sizeof(nm), "%s", sel->name.c_str());
+    if (ImGui::InputText("Name", nm, sizeof(nm))) sel->name = nm;
+    trackWidget();
+    char tg[64];
+    std::snprintf(tg, sizeof(tg), "%s", sel->tag.c_str());
+    if (ImGui::InputText("Tag", tg, sizeof(tg))) sel->tag = tg;
+    trackWidget();
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Free-form game metadata (saved in the scene)");
+
+    ImGui::DragFloat3("Position", &sel->position[0], 0.1f);
+    trackWidget();
+    ImGui::DragFloat3("Target",   &sel->target[0],   0.1f);
+    trackWidget();
+    ImGui::SliderFloat("FOV", &sel->fov, 10.0f, 120.0f, "%.0f deg");
+    trackWidget();
+    ImGui::DragFloat("Near", &sel->nearPlane, 0.01f, 0.001f, 100.0f, "%.3f");
+    trackWidget();
+    ImGui::DragFloat("Far",  &sel->farPlane,  1.0f, 1.0f, 10000.0f, "%.0f");
+    trackWidget();
+    // Keep the planes sane no matter what the widgets allowed.
+    sel->nearPlane = std::clamp(sel->nearPlane, 0.001f, sel->farPlane * 0.5f);
+    sel->farPlane  = std::max(sel->farPlane, sel->nearPlane * 2.0f);
+
+    if (ImGui::Button("Activate")) activateSceneCamera(sel->id);
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("View through this camera (double-click works too)");
+    ImGui::SameLine();
+    bool isActive = (sel->id == cameraRig_.activeId());
+    if (isActive) ImGui::BeginDisabled();
+    if (ImGui::Button("Set active")) cameraRig_.setActive(sel->id);
+    if (isActive) ImGui::EndDisabled();
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+        ImGui::SetTooltip("The game's initial camera (saved in the scene)");
+    ImGui::SameLine();
+    if (ImGui::Button("Delete")) {
+        SceneCamera copy = *sel;   // copy BEFORE removeCamera invalidates sel
+        int id = sel->id;
+        history_.push(std::make_unique<CameraCommand>(
+            cameraRig_, copy, false, "Delete Camera"));
+        cameraRig_.removeCamera(id);
+        selectedCameraId_ = -1;
+        markCamPreviewsStale();
+    }
+}
+
+void App::drawCameraViewContent() {
+    ImGui::Checkbox("Live previews", &camPreviewsLive_);
+    ImGui::SameLine();
+    if (camPreviewsLive_) ImGui::BeginDisabled();
+    if (ImGui::Button("Refresh")) markCamPreviewsStale();
+    if (camPreviewsLive_) ImGui::EndDisabled();
+    ImGui::SameLine();
+    ImGui::TextDisabled("(renders one camera per frame, round-robin)");
+
+    const auto& cams = cameraRig_.cameras();
+    if (cams.empty()) {
+        ImGui::Spacing();
+        ImGui::TextDisabled("No cameras yet. Add one in the Cameras panel "
+                            "(\"Add from current view\").");
+        return;
+    }
+
+    const float thumbW = 224.0f;
+    const float thumbH = thumbW * 9.0f / 16.0f;
+    float avail = ImGui::GetContentRegionAvail().x;
+    int cols = std::max(1, (int)(avail / (thumbW + 12.0f)));
+    if (!ImGui::BeginTable("camgrid", cols)) return;
+    for (size_t i = 0; i < cams.size(); ++i) {
+        const SceneCamera& c = cams[i];
+        ImGui::TableNextColumn();
+        ImGui::PushID(c.id);
+
+        bool hasTex = i < camPreviews_.size() &&
+                      camPreviews_[i].color.id() != 0 &&
+                      !camPreviews_[i].stale;
+        if (hasTex) {
+            // GL textures are bottom-up — flip V.
+            ImGui::Image((ImTextureID)(intptr_t)camPreviews_[i].color.id(),
+                         ImVec2(thumbW, thumbH), ImVec2(0, 1), ImVec2(1, 0));
+        } else {
+            ImGui::Dummy(ImVec2(thumbW, thumbH));
+        }
+        ImVec2 r0 = ImGui::GetItemRectMin(), r1 = ImGui::GetItemRectMax();
+        ImDrawList* dl = ImGui::GetWindowDrawList();
+        ImU32 border = (c.id == selectedCameraId_)  ? IM_COL32(255, 230, 110, 255) :
+                       (c.id == cameraRig_.activeId()) ? IM_COL32(90, 220, 110, 255)
+                                                      : IM_COL32(70, 70, 70, 255);
+        dl->AddRect(r0, r1, border, 4.0f, 0, 2.0f);
+        if (!hasTex)
+            dl->AddText(ImVec2(r0.x + 8, (r0.y + r1.y) * 0.5f - 7),
+                        IM_COL32(140, 140, 140, 255), "(rendering...)");
+
+        if (ImGui::IsItemClicked(ImGuiMouseButton_Left))
+            selectedCameraId_ = c.id;
+        if (ImGui::IsItemHovered() &&
+            ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left))
+            activateSceneCamera(c.id);
+
+        char cap[160];
+        std::snprintf(cap, sizeof(cap), "%s%s", c.name.c_str(),
+                      c.id == cameraRig_.activeId() ? " [active]" : "");
+        ImGui::TextUnformatted(cap);
+        if (!c.tag.empty()) {
+            ImGui::SameLine();
+            ImGui::TextDisabled("[%s]", c.tag.c_str());
+        }
+        ImGui::PopID();
+    }
+    ImGui::EndTable();
 }
 

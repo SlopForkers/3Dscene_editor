@@ -270,6 +270,36 @@ static void CatBuild(ImDrawList* dl, ImVec2 p0, ImVec2 p1, ImU32 col) {
 
 
 
+static void CatCameras(ImDrawList* dl, ImVec2 p0, ImVec2 p1, ImU32 col) {
+    // Movie camera: body, two film reels on top, lens cone to the right.
+    float w = p1.x - p0.x, h = p1.y - p0.y;
+    ImVec2 b0(p0.x + w * 0.06f, p0.y + h * 0.38f);
+    float bw = w * 0.58f, bh = h * 0.42f;
+    ImVec2 b1(b0.x + bw, b0.y + bh);
+    dl->AddRectFilled(b0, b1, col, 2.0f);
+    dl->AddCircle(ImVec2(b0.x + bw * 0.25f, b0.y - h * 0.09f), h * 0.14f, col, 0, 1.8f);
+    dl->AddCircle(ImVec2(b0.x + bw * 0.78f, b0.y - h * 0.09f), h * 0.14f, col, 0, 1.8f);
+    dl->AddQuadFilled(ImVec2(b1.x, b0.y + bh * 0.18f),
+                      ImVec2(b1.x, b1.y - bh * 0.18f),
+                      ImVec2(p1.x - w * 0.04f, b1.y),
+                      ImVec2(p1.x - w * 0.04f, b0.y), col);
+}
+static void CatCamView(ImDrawList* dl, ImVec2 p0, ImVec2 p1, ImU32 col) {
+    // 2x2 thumbnail grid (multi-camera monitor); top-left cell is "live".
+    float w = p1.x - p0.x, h = p1.y - p0.y;
+    float gx = w * 0.10f, gy = h * 0.10f;
+    float cw = (w - 3 * gx) * 0.5f, ch = (h - 3 * gy) * 0.5f;
+    for (int r = 0; r < 2; ++r)
+        for (int c = 0; c < 2; ++c) {
+            ImVec2 a(p0.x + gx + c * (cw + gx), p0.y + gy + r * (ch + gy));
+            ImVec2 b(a.x + cw, a.y + ch);
+            if (r == 0 && c == 0) dl->AddRectFilled(a, b, col, 2.0f);
+            else                  dl->AddRect(a, b, col, 2.0f, 0, 1.6f);
+        }
+}
+
+
+
 IconFn brushIcon(int type) {
     switch (type) {
         case Terrain::BrushParams::Raise:    return &Raise;
@@ -297,6 +327,8 @@ IconFn catIcon(int cat) {
         case App::CatView:       return &CatView;
         case App::CatHistory:    return &CatHistory;
         case App::CatFile:       return &CatFile;
+        case App::CatCameras:    return &CatCameras;
+        case App::CatCamView:    return &CatCamView;
         default: return nullptr;
     }
 }
@@ -314,6 +346,8 @@ const char* catName(int cat) {
         case App::CatView:       return "View";
         case App::CatHistory:    return "History";
         case App::CatFile:       return "File";
+        case App::CatCameras:    return "Cameras";
+        case App::CatCamView:    return "Camera View";
         default: return "?";
     }
 }

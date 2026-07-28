@@ -249,6 +249,12 @@ void App::shutdown() {
         viewportColor_.destroy();
         if (viewportDepthRbo_) { glDeleteRenderbuffers(1, &viewportDepthRbo_); viewportDepthRbo_ = 0; }
         noiseTex_.destroy();
+        for (auto& p : camPreviews_) {
+            if (p.fbo)      glDeleteFramebuffers(1, &p.fbo);
+            if (p.depthRbo) glDeleteRenderbuffers(1, &p.depthRbo);
+            p.color.destroy();
+        }
+        camPreviews_.clear();
         props_.clear();
         modelLibrary_.clear();
         glfwDestroyWindow(window_);
@@ -321,6 +327,8 @@ int App::run(const std::vector<std::string>& importArgs) {
 
         // 3D scene into the viewport FBO (sized to the viewport window).
         renderScene();
+        // Camera View thumbnails: at most one small FBO render per frame.
+        updateCameraPreviews();
 
         // UI (dockspace + windows incl. the viewport image) into the default
         // framebuffer.
@@ -343,6 +351,9 @@ void App::undoEdit() {
     selectedBlockFace_ = -1;
     if (props_.selectedId() >= 0 && !props_.findProp(props_.selectedId()))
         props_.select(-1);
+    if (selectedCameraId_ >= 0 && !cameraRig_.findCamera(selectedCameraId_))
+        selectedCameraId_ = -1;
+    markCamPreviewsStale();
 }
 
 void App::redoEdit() {
@@ -351,6 +362,9 @@ void App::redoEdit() {
     selectedBlockFace_ = -1;
     if (props_.selectedId() >= 0 && !props_.findProp(props_.selectedId()))
         props_.select(-1);
+    if (selectedCameraId_ >= 0 && !cameraRig_.findCamera(selectedCameraId_))
+        selectedCameraId_ = -1;
+    markCamPreviewsStale();
 }
 
 void App::importModel(const std::string& path) {
@@ -479,6 +493,9 @@ void App::handleInput(float dt) {
         if (g_input.keyPressed(GLFW_KEY_8)) brush_.type = Terrain::BrushParams::Vegetation;
         if (g_input.keyPressed(GLFW_KEY_F)) wireframe_ = !wireframe_;
         if (g_input.keyPressed(GLFW_KEY_H)) showHelp_ = !showHelp_;
+        // Cycle through scene cameras (jump the editor view to their pose).
+        if (g_input.keyPressed(GLFW_KEY_LEFT_BRACKET))  cycleSceneCamera(-1);
+        if (g_input.keyPressed(GLFW_KEY_RIGHT_BRACKET)) cycleSceneCamera(+1);
 
         // Undo/redo. Ctrl+Z undoes, Ctrl+Shift+Z or Ctrl+Y redoes.
         bool ctrl = g_input.keyDown(GLFW_KEY_LEFT_CONTROL) ||
@@ -595,6 +612,86 @@ void App::renderDepthPass(const glm::mat4& lvp) {
     glCullFace(GL_BACK);
 }
 
+// The shadow + main scene passes, shared by the viewport and camera previews.
+// Caller binds + clears the target FBO first. Editor overlays (ghost previews,
+// selection boxes, gizmos, brush cursor) are NOT drawn here — see renderScene.
+void App::renderWorld(const glm::mat4& view, const glm::mat4& proj,
+                      const glm::vec3& camPos, const glm::vec3& shadowCenter,
+                      GLuint targetFbo, int targetW, int targetH,
+                      bool withShadows) {
+    glm::mat4 vp = proj * view;
+
+    // --- Shadow pass (skipped entirely when shadows are off) ---
+    glm::vec3 lightDir = lightDirFromAngles(lightAzimuth_, lightElevation_);
+    glm::mat4 lvp(1.0f);
+    if (withShadows) {
+        glm::vec3 center = shadowCenter;
+        // 0.75 covers the terrain corners (half-diagonal = 0.707 * size).
+        float radius = terrain_.worldSize() * 0.75f;
+        glm::vec3 lightPos = center - lightDir * radius;
+        glm::mat4 lightView = glm::lookAt(lightPos, center, glm::vec3(0.0f, 1.0f, 0.0f));
+        glm::mat4 lightProj = glm::ortho(-radius, radius, -radius, radius, 0.1f, radius * 2.0f);
+        lvp = lightProj * lightView;
+
+        // Unbind the shadow map before it becomes the depth attachment —
+        // sampling a texture while rendering into it is a feedback loop.
+        glActiveTexture(GL_TEXTURE0 + kShadowTexUnit);
+        glBindTexture(GL_TEXTURE_2D, 0);
+
+        glViewport(0, 0, kShadowSize, kShadowSize);
+        glBindFramebuffer(GL_FRAMEBUFFER, shadowFbo_);
+        glClear(GL_DEPTH_BUFFER_BIT);
+        renderDepthPass(lvp);
+        glBindFramebuffer(GL_FRAMEBUFFER, targetFbo);
+        glViewport(0, 0, targetW, targetH);
+
+        glActiveTexture(GL_TEXTURE0 + kShadowTexUnit);
+        glBindTexture(GL_TEXTURE_2D, shadowMap_);
+    }
+    int enableShadow = withShadows ? 1 : 0;
+
+    // --- Main pass ---
+    // Skybox first.
+    glm::mat4 skyVp = proj * glm::mat4(glm::mat3(view));
+    glDepthFunc(GL_LEQUAL);
+    skybox_.draw(skyboxShader_, skyVp, skyExposure_);
+    glDepthFunc(GL_LESS);
+
+    terrainShader_.use();
+    terrainShader_.setMat4("uViewProj", vp);
+    terrainShader_.setMat4("uModel", glm::mat4(1.0f));
+    terrainShader_.setVec3("uLightDir", lightDir);
+    terrainShader_.setVec3("uCamPos", camPos);
+    terrainShader_.setFloat("uMaxHeight", terrain_.maxHeight());
+    terrainShader_.setMat4("uLightViewProj", lvp);
+    terrainShader_.setInt("uShadowMap", kShadowTexUnit);
+    terrainShader_.setInt("uEnableShadow", enableShadow);
+    terrain_.bindTextures(terrainShader_);
+    terrain_.draw();
+
+    if (props_.count() > 0) {
+        propShader_.use();
+        propShader_.setMat4("uLightViewProj", lvp);
+        propShader_.setInt("uShadowMap", kShadowTexUnit);
+        propShader_.setInt("uEnableShadow", enableShadow);
+        props_.render(propShader_, vp, lightDir, camPos);
+    }
+    if (details_.instanceCount() > 0) {
+        propShader_.use();
+        propShader_.setMat4("uLightViewProj", lvp);
+        propShader_.setInt("uShadowMap", kShadowTexUnit);
+        propShader_.setInt("uEnableShadow", enableShadow);
+        details_.render(propShader_, vp, lightDir, camPos);
+    }
+    if (build_.count() > 0) {
+        blockShader_.use();
+        blockShader_.setMat4("uLightViewProj", lvp);
+        blockShader_.setInt("uShadowMap", kShadowTexUnit);
+        blockShader_.setInt("uEnableShadow", enableShadow);
+        build_.render(blockShader_, vp, lightDir, camPos);
+    }
+}
+
 void App::renderScene() {
     // Scene renders into the viewport FBO; the UI displays it as an image.
     ensureViewportFbo();
@@ -613,75 +710,11 @@ void App::renderScene() {
     glm::mat4 proj = camera_.projection();
     glm::mat4 vp = proj * view;
 
-    // --- Shadow pass (skipped entirely when shadows are off) ---
+    renderWorld(view, proj, camera_.position(), camera_.target(),
+                viewportFbo_, viewportW_, viewportH_, showShadows_);
+
+    // --- Editor-only overlays below (never drawn into camera previews) ---
     glm::vec3 lightDir = lightDirFromAngles(lightAzimuth_, lightElevation_);
-    glm::mat4 lvp(1.0f);
-    if (showShadows_) {
-        glm::vec3 center = camera_.target();
-        // 0.75 covers the terrain corners (half-diagonal = 0.707 * size).
-        float radius = terrain_.worldSize() * 0.75f;
-        glm::vec3 lightPos = center - lightDir * radius;
-        glm::mat4 lightView = glm::lookAt(lightPos, center, glm::vec3(0.0f, 1.0f, 0.0f));
-        glm::mat4 lightProj = glm::ortho(-radius, radius, -radius, radius, 0.1f, radius * 2.0f);
-        lvp = lightProj * lightView;
-
-        // Unbind the shadow map before it becomes the depth attachment —
-        // sampling a texture while rendering into it is a feedback loop.
-        glActiveTexture(GL_TEXTURE0 + kShadowTexUnit);
-        glBindTexture(GL_TEXTURE_2D, 0);
-
-        glViewport(0, 0, kShadowSize, kShadowSize);
-        glBindFramebuffer(GL_FRAMEBUFFER, shadowFbo_);
-        glClear(GL_DEPTH_BUFFER_BIT);
-        renderDepthPass(lvp);
-        glBindFramebuffer(GL_FRAMEBUFFER, viewportFbo_);
-        glViewport(0, 0, viewportW_, viewportH_);
-
-        glActiveTexture(GL_TEXTURE0 + kShadowTexUnit);
-        glBindTexture(GL_TEXTURE_2D, shadowMap_);
-    }
-    int enableShadow = showShadows_ ? 1 : 0;
-
-    // --- Main pass ---
-    // Skybox first.
-    glm::mat4 skyVp = proj * glm::mat4(glm::mat3(view));
-    glDepthFunc(GL_LEQUAL);
-    skybox_.draw(skyboxShader_, skyVp, skyExposure_);
-    glDepthFunc(GL_LESS);
-
-    terrainShader_.use();
-    terrainShader_.setMat4("uViewProj", vp);
-    terrainShader_.setMat4("uModel", glm::mat4(1.0f));
-    terrainShader_.setVec3("uLightDir", lightDir);
-    terrainShader_.setVec3("uCamPos", camera_.position());
-    terrainShader_.setFloat("uMaxHeight", terrain_.maxHeight());
-    terrainShader_.setMat4("uLightViewProj", lvp);
-    terrainShader_.setInt("uShadowMap", kShadowTexUnit);
-    terrainShader_.setInt("uEnableShadow", enableShadow);
-    terrain_.bindTextures(terrainShader_);
-    terrain_.draw();
-
-    if (props_.count() > 0) {
-        propShader_.use();
-        propShader_.setMat4("uLightViewProj", lvp);
-        propShader_.setInt("uShadowMap", kShadowTexUnit);
-        propShader_.setInt("uEnableShadow", 1);
-        props_.render(propShader_, vp, lightDir, camera_.position());
-    }
-    if (details_.instanceCount() > 0) {
-        propShader_.use();
-        propShader_.setMat4("uLightViewProj", lvp);
-        propShader_.setInt("uShadowMap", kShadowTexUnit);
-        propShader_.setInt("uEnableShadow", 1);
-        details_.render(propShader_, vp, lightDir, camera_.position());
-    }
-    if (build_.count() > 0) {
-        blockShader_.use();
-        blockShader_.setMat4("uLightViewProj", lvp);
-        blockShader_.setInt("uShadowMap", kShadowTexUnit);
-        blockShader_.setInt("uEnableShadow", 1);
-        build_.render(blockShader_, vp, lightDir, camera_.position());
-    }
     // Ghost preview for the next block (build tool only).
     if (toolMode_ == ToolBuild && hasGhost_) {
         // Walls have yaw=0 — size encodes orientation. Foundation has no yaw.
@@ -826,7 +859,175 @@ void App::renderScene() {
         }
     }
 
+    drawCameraFrustums(vp);
     glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
+}
+
+// ---------------------------------------------------------------------------
+// Scene cameras: frustum lines, activation, preview FBOs.
+
+void App::drawCameraFrustums(const glm::mat4& vp) {
+    if (!showCamFrustums_ || cameraRig_.cameras().empty()) return;
+
+    lineShader_.use();
+    lineShader_.setMat4("uViewProj", vp);
+    lineShader_.setFloat("uAlpha", 1.0f);
+    glDisable(GL_DEPTH_TEST);   // stay visible through geometry (level design)
+    glBindVertexArray(dragVao_);
+    glBindBuffer(GL_ARRAY_BUFFER, dragVbo_);
+
+    for (const auto& c : cameraRig_.cameras()) {
+        glm::vec3 fwd = c.target - c.position;
+        if (glm::dot(fwd, fwd) < 1e-8f) continue;
+        glm::vec3 f = glm::normalize(fwd);
+        glm::vec3 up(0.0f, 1.0f, 0.0f);
+        if (std::abs(glm::dot(f, up)) > 0.999f) up = glm::vec3(1.0f, 0.0f, 0.0f);
+        glm::vec3 right = glm::normalize(glm::cross(f, up));
+        glm::vec3 upv = glm::cross(right, f);
+
+        // Frustum pyramid at a fixed visualisation depth (16:9 — the game's
+        // target aspect; the preview FBOs use it too).
+        const float depth = 6.0f;
+        const float aspect = 16.0f / 9.0f;
+        float hh = depth * std::tan(glm::radians(c.fov) * 0.5f);
+        float hw = hh * aspect;
+        glm::vec3 ctr = c.position + f * depth;
+        glm::vec3 c0 = ctr - right * hw - upv * hh;
+        glm::vec3 c1 = ctr + right * hw - upv * hh;
+        glm::vec3 c2 = ctr + right * hw + upv * hh;
+        glm::vec3 c3 = ctr - right * hw + upv * hh;
+        const glm::vec3& P = c.position;
+        const glm::vec3& T = c.target;
+        float pts[20][3] = {
+            {P.x,P.y,P.z}, {c0.x,c0.y,c0.z},   {P.x,P.y,P.z}, {c1.x,c1.y,c1.z},
+            {P.x,P.y,P.z}, {c2.x,c2.y,c2.z},   {P.x,P.y,P.z}, {c3.x,c3.y,c3.z},
+            {c0.x,c0.y,c0.z}, {c1.x,c1.y,c1.z}, {c1.x,c1.y,c1.z}, {c2.x,c2.y,c2.z},
+            {c2.x,c2.y,c2.z}, {c3.x,c3.y,c3.z}, {c3.x,c3.y,c3.z}, {c0.x,c0.y,c0.z},
+            {P.x,P.y,P.z}, {T.x,T.y,T.z},      // optical axis
+            // "up" tick on the frustum rect so roll reads correctly.
+            {c2.x,c2.y,c2.z}, {c2.x + upv.x * hh * 0.4f,
+                               c2.y + upv.y * hh * 0.4f,
+                               c2.z + upv.z * hh * 0.4f},
+        };
+
+        glm::vec3 col(0.55f, 0.65f, 0.85f);                    // normal
+        if (c.id == cameraRig_.activeId()) col = glm::vec3(0.35f, 1.0f, 0.45f);
+        if (c.id == selectedCameraId_)     col = glm::vec3(1.0f, 0.9f, 0.2f);
+        lineShader_.setVec3("uColor", col);
+        glBufferData(GL_ARRAY_BUFFER, sizeof(pts), pts, GL_DYNAMIC_DRAW);
+        glDrawArrays(GL_LINES, 0, 18);
+    }
+
+    glBindVertexArray(0);
+    glEnable(GL_DEPTH_TEST);
+}
+
+// Jump the editor orbit camera to a scene camera's pose. The orbit camera is
+// spherical around its target, so invert that parameterisation (see
+// Camera::updatePosition: offset = d * (cp*sy, sp, cp*cy)).
+void App::activateSceneCamera(int id) {
+    const SceneCamera* c = cameraRig_.findCamera(id);
+    if (!c) return;
+    glm::vec3 off = c->position - c->target;
+    float dist = glm::length(off);
+    if (dist < 1e-3f) return;   // degenerate pose — nothing to look through
+    float pitch = std::asin(std::clamp(off.y / dist, -1.0f, 1.0f));
+    pitch = std::clamp(pitch, 0.05f, 1.55f);   // Camera's min/max pitch
+    float yaw = std::atan2(off.x, off.z);
+    camera_.setTarget(c->target);
+    camera_.setYaw(yaw);
+    camera_.setPitch(pitch);
+    camera_.setDistance(dist);
+    selectedCameraId_ = id;
+}
+
+void App::cycleSceneCamera(int dir) {
+    const auto& cams = cameraRig_.cameras();
+    int n = (int)cams.size();
+    if (n == 0) return;
+    int idx = -1;
+    for (int i = 0; i < n; ++i)
+        if (cams[i].id == selectedCameraId_) { idx = i; break; }
+    if (idx < 0) idx = (dir > 0) ? 0 : n - 1;
+    else         idx = (idx + dir + n) % n;
+    activateSceneCamera(cams[idx].id);
+}
+
+void App::markCamPreviewsStale() {
+    for (auto& p : camPreviews_) p.stale = true;
+}
+
+void App::ensureCamPreviewFbos() {
+    size_t want = cameraRig_.cameras().size();
+    while (camPreviews_.size() > want) {
+        CamPreview& p = camPreviews_.back();
+        if (p.fbo)      glDeleteFramebuffers(1, &p.fbo);
+        if (p.depthRbo) glDeleteRenderbuffers(1, &p.depthRbo);
+        p.color.destroy();
+        camPreviews_.pop_back();
+    }
+    while (camPreviews_.size() < want) {
+        camPreviews_.emplace_back();
+        CamPreview& p = camPreviews_.back();
+        p.color.create();
+        glBindTexture(GL_TEXTURE_2D, p.color);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, kCamPreviewW, kCamPreviewH, 0,
+                     GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+        glBindTexture(GL_TEXTURE_2D, 0);
+
+        glGenRenderbuffers(1, &p.depthRbo);
+        glBindRenderbuffer(GL_RENDERBUFFER, p.depthRbo);
+        glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH_COMPONENT24,
+                              kCamPreviewW, kCamPreviewH);
+        glBindRenderbuffer(GL_RENDERBUFFER, 0);
+
+        glGenFramebuffers(1, &p.fbo);
+        glBindFramebuffer(GL_FRAMEBUFFER, p.fbo);
+        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
+                               GL_TEXTURE_2D, p.color, 0);
+        glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT,
+                                  GL_RENDERBUFFER, p.depthRbo);
+        glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    }
+}
+
+void App::renderCameraPreview(const SceneCamera& cam, CamPreview& pv) {
+    glBindFramebuffer(GL_FRAMEBUFFER, pv.fbo);
+    glViewport(0, 0, kCamPreviewW, kCamPreviewH);
+    glClearColor(0.10f, 0.12f, 0.15f, 1.0f);
+    glClearDepthf(1.0f);
+    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+    glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
+
+    glm::mat4 view = cam.viewMatrix();
+    glm::mat4 proj = cam.projectionMatrix(float(kCamPreviewW) / float(kCamPreviewH));
+    // Thumbnails skip the shadow pass entirely (cost + feedback-loop care).
+    renderWorld(view, proj, cam.position, cam.target,
+                pv.fbo, kCamPreviewW, kCamPreviewH, false);
+}
+
+// At most ONE camera preview renders per frame (round-robin). Live mode
+// cycles continuously; otherwise only previews marked stale are re-rendered.
+void App::updateCameraPreviews() {
+    if (!showCameraView_ || cameraRig_.cameras().empty()) return;
+    ensureCamPreviewFbos();
+    size_t n = cameraRig_.cameras().size();
+    camPreviewCursor_ %= n;
+    if (!camPreviewsLive_) {
+        size_t start = camPreviewCursor_;
+        while (!camPreviews_[camPreviewCursor_].stale) {
+            camPreviewCursor_ = (camPreviewCursor_ + 1) % n;
+            if (camPreviewCursor_ == start) return;   // nothing to refresh
+        }
+    }
+    renderCameraPreview(cameraRig_.cameras()[camPreviewCursor_],
+                        camPreviews_[camPreviewCursor_]);
+    camPreviews_[camPreviewCursor_].stale = false;
+    camPreviewCursor_ = (camPreviewCursor_ + 1) % n;
 }
 
 void App::drawSelectionBox() {
