@@ -1,0 +1,48 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  build:
+    name: ${{ matrix.toolchain }} / ${{ matrix.config }}
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        toolchain: [MSVC, MinGW]
+        config: [Release]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup MinGW
+        if: matrix.toolchain == 'MinGW'
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          update: true
+          install: >-
+            mingw-w64-x86_64-gcc
+            mingw-w64-x86_64-cmake
+            mingw-w64-x86_64-ninja
+
+      - name: Configure (MSVC)
+        if: matrix.toolchain == 'MSVC'
+        run: cmake -B build -S . -DCMAKE_BUILD_TYPE=${{ matrix.config }}
+
+      - name: Configure (MinGW)
+        if: matrix.toolchain == 'MinGW'
+        shell: msys2 {0}
+        run: cmake -B build -S . -G Ninja -DCMAKE_BUILD_TYPE=${{ matrix.config }}
+
+      - name: Build
+        shell: ${{ matrix.toolchain == 'MinGW' && 'msys2 {0}' || 'pwsh' }}
+        run: cmake --build build --config ${{ matrix.config }}
+
+      - name: Unit tests
+        shell: ${{ matrix.toolchain == 'MinGW' && 'msys2 {0}' || 'pwsh' }}
+        run: ./build/bin/tests.exe

@@ -1,0 +1,19 @@
+# clang-tidy config — Scene Editor
+# Focus: real bugs, C++20 modernization, performance. No style noise
+# (formatting is .clang-format's job) and no readablity-only churn.
+Checks: >
+  bugprone-*,
+  -bugprone-easily-swappable-parameters,
+  clang-analyzer-*,
+  modernize-*,
+  -modernize-use-trailing-return-type,
+  -modernize-avoid-c-arrays,
+  performance-*,
+  -performance-avoid-endl
+
+WarningsAsErrors: ''
+HeaderFilterRegex: 'src/.*'
+CheckOptions:
+  bugprone-suspicious-string-compare.WarnOnLogicalNotComparison: true
+  modernize-use-nullptr.NullMacros: ''
+  modernize-loop-convert.MaxCopySize: '32'

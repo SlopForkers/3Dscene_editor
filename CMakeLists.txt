@@ -37,11 +37,13 @@ FetchContent_Declare(
     GIT_TAG        1.0.3
     GIT_SHALLOW    TRUE
 )
-FetchContent_GetProperties(glm)
-if(NOT glm_POPULATED)
-    FetchContent_Populate(glm)
-endif()
-add_library(glm INTERFACE)
+set(GLM_BUILD_LIBRARY OFF CACHE BOOL "" FORCE)
+set(GLM_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+set(GLM_BUILD_INSTALL OFF CACHE BOOL "" FORCE)
+FetchContent_MakeAvailable(glm)
+# glm's own interface target uses plain (non-SYSTEM) includes; re-adding the
+# same dir as SYSTEM keeps -Wall -Wextra -Wpedantic silent on glm headers
+# (GCC/Clang ignore the -I form when the dir is also passed via -isystem).
 target_include_directories(glm SYSTEM INTERFACE ${glm_SOURCE_DIR})
 
 # Dear ImGui
@@ -202,10 +204,18 @@ if(BUILD_TESTS)
         GIT_TAG        v2.4.11
         GIT_SHALLOW    TRUE
     )
-    FetchContent_GetProperties(doctest)
-    if(NOT doctest_POPULATED)
-        FetchContent_Populate(doctest)
-    endif()
+    set(DOCTEST_WITH_TESTS OFF CACHE BOOL "" FORCE)
+    set(DOCTEST_NO_INSTALL ON CACHE BOOL "" FORCE)
+    # doctest v2.4.11 declares cmake_minimum_required(3.0) which CMake >= 4
+    # rejects; these are the documented escape hatches for legacy dependencies.
+    set(_save_warn_deprecated ${CMAKE_WARN_DEPRECATED})
+    set(CMAKE_WARN_DEPRECATED OFF)
+    set(CMAKE_POLICY_VERSION_MINIMUM 3.5)
+    FetchContent_MakeAvailable(doctest)
+    set(CMAKE_WARN_DEPRECATED ${_save_warn_deprecated})
+    unset(CMAKE_POLICY_VERSION_MINIMUM)
+    # Same trick as glm: keep doctest headers warning-free under -Wpedantic.
+    target_include_directories(doctest SYSTEM INTERFACE ${doctest_SOURCE_DIR})
 
     add_executable(tests
         tests/test_main.cpp
@@ -214,8 +224,7 @@ if(BUILD_TESTS)
     target_include_directories(tests PRIVATE
         ${CMAKE_SOURCE_DIR}/src
         ${CMAKE_SOURCE_DIR}/src/platform
-        ${doctest_SOURCE_DIR}
     )
-    target_link_libraries(tests PRIVATE glm)
+    target_link_libraries(tests PRIVATE glm doctest::doctest)
     target_compile_options(tests PRIVATE -Wall -Wextra -Wpedantic)
 endif()
