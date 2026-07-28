@@ -76,8 +76,11 @@ float VertexEditor::worldSize(const Camera& cam, const glm::vec3& pos) const {
            (90.0f / float(cam.viewportHeight()));
 }
 
-int VertexEditor::axisCount() const {
-    return dragMode_ == FreeXYZ ? 3 : 1;
+void VertexEditor::mouseRay(const Camera& cam, glm::vec3& outOrigin, glm::vec3& outDir) const {
+    float sx = (float)g_input.mouseX() * dpiScaleX_;
+    float sy = (float)g_input.mouseY() * dpiScaleY_;
+    cam.screenToRay(sx, sy, outOrigin, outDir);
+    outDir = glm::normalize(outDir);
 }
 
 glm::vec3 VertexEditor::axisDir(int axis, const glm::vec3& n) const {
@@ -88,10 +91,9 @@ glm::vec3 VertexEditor::axisDir(int axis, const glm::vec3& n) const {
 }
 
 bool VertexEditor::pickAxis(const Camera& cam, const glm::vec3& pos,
-                             const glm::vec3& n, float size, int& outAxis) {
+                              const glm::vec3& n, float size, int& outAxis) {
     glm::vec3 ro, rd;
-    cam.screenToRay((float)g_input.mouseX(), (float)g_input.mouseY(), ro, rd);
-    rd = glm::normalize(rd);
+    mouseRay(cam, ro, rd);
 
     float tol = size * 0.12f;
     float bestDist = 1e30f;
@@ -152,9 +154,19 @@ static float falloffWeight(float dist, float radius, int mode) {
 
 bool VertexEditor::handleInput(const Camera& cam, Terrain& terrain,
                                 float radius, int falloff,
-                                const ImGuiIO& io, bool overUI) {
+                                const ImGuiIO& /*io*/, bool overUI) {
     const bool ctrl = g_input.keyDown(GLFW_KEY_LEFT_CONTROL) ||
                       g_input.keyDown(GLFW_KEY_RIGHT_CONTROL);
+
+    // Hover feedback for the gizmo axes (no button held, pointer over scene).
+    if (!dragging_ && hasSelection() && !overUI && !g_input.mouseDown(Input::Left)) {
+        float size = worldSize(cam, center_);
+        pickAxis(cam, center_, normal_, size, hoverAxis_);
+    } else if (dragging_) {
+        hoverAxis_ = activeAxis_;
+    } else {
+        hoverAxis_ = -1;
+    }
 
     if (dragging_) {
         if (!g_input.mouseDown(Input::Left)) {
@@ -167,14 +179,16 @@ bool VertexEditor::handleInput(const Camera& cam, Terrain& terrain,
         // Plane normal = camera-forward component perpendicular to the axis.
         glm::vec3 aDir = axisDir(activeAxis_, normal_);
         glm::vec3 ro, rd;
-        cam.screenToRay((float)g_input.mouseX(), (float)g_input.mouseY(), ro, rd);
-        rd = glm::normalize(rd);
+        mouseRay(cam, ro, rd);
         glm::vec3 camFwd = -rd;
         glm::vec3 perp = glm::cross(camFwd, aDir);
         if (glm::dot(perp, perp) < 1e-8f) perp = glm::cross(aDir, glm::vec3(0, 1, 0));
         glm::vec3 planeN = glm::normalize(glm::cross(aDir, perp));
-        glm::vec3 hit = rayPlaneHit(ro, rd, dragStartWorld_, planeN);
-        glm::vec3 delta = hit - dragStartWorld_;
+        // Delta is measured from the PRESS-TIME ray/plane hit, not from the
+        // selection centre — otherwise vertices jump on the first drag frame
+        // by however far off-centre the axis was grabbed.
+        glm::vec3 hit = rayPlaneHit(ro, rd, dragStartHit_, planeN);
+        glm::vec3 delta = hit - dragStartHit_;
         float scalar = glm::dot(delta, aDir);
 
         float heightDelta;
@@ -182,7 +196,10 @@ bool VertexEditor::handleInput(const Camera& cam, Terrain& terrain,
             float ny = std::max(std::abs(normal_.y), 0.1f);
             heightDelta = scalar / ny;
         } else {
-            heightDelta = scalar;
+            // A heightfield vertex can only move vertically: horizontal axes
+            // contribute through their Y component only (X/Z -> no-op).
+            heightDelta = scalar * glm::abs(aDir.y);
+            if (glm::abs(aDir.y) < 1e-3f) heightDelta = 0.0f;
         }
 
         // Apply to every vertex in the saved box using its baseline height.
@@ -234,6 +251,18 @@ bool VertexEditor::handleInput(const Camera& cam, Terrain& terrain,
                         terrain.getHeight(ix, iz);
             dragStartWorld_ = center_;
             startCenterY_ = center_.y;
+            // Record where on the drag plane the axis was grabbed so the
+            // first-frame delta is zero (see the dragging_ branch).
+            {
+                glm::vec3 aDir = axisDir(axis, normal_);
+                glm::vec3 ro, rd;
+                mouseRay(cam, ro, rd);
+                glm::vec3 camFwd = -rd;
+                glm::vec3 perp = glm::cross(camFwd, aDir);
+                if (glm::dot(perp, perp) < 1e-8f) perp = glm::cross(aDir, glm::vec3(0, 1, 0));
+                glm::vec3 planeN = glm::normalize(glm::cross(aDir, perp));
+                dragStartHit_ = rayPlaneHit(ro, rd, center_, planeN);
+            }
             return true;
         }
     }
@@ -241,8 +270,7 @@ bool VertexEditor::handleInput(const Camera& cam, Terrain& terrain,
     // Click on terrain → select a vertex.
     if (g_input.mousePressed(Input::Left) && !overUI) {
         glm::vec3 ro, rd;
-        cam.screenToRay((float)g_input.mouseX(), (float)g_input.mouseY(), ro, rd);
-        rd = glm::normalize(rd);
+        mouseRay(cam, ro, rd);
         glm::vec3 hit;
         if (terrain.raycast(ro, rd, hit)) {
             int ix, iz;
@@ -279,10 +307,12 @@ void VertexEditor::draw(const Camera& cam, const Terrain& terrain,
         lineShader.use();
         lineShader.setMat4("uViewProj", vp);
         lineShader.setVec3("uColor", glm::vec3(1.0f, 0.85f, 0.2f));
+        lineShader.setFloat("uAlpha", 1.0f);
         glPointSize(10.0f);
         glBindVertexArray(vaoPoint_);
         glDrawArrays(GL_POINTS, 0, (GLsizei)pts.size());
         glBindVertexArray(0);
+        glPointSize(1.0f);   // restore GL default
     }
 
     // Gizmo axes.
@@ -290,6 +320,7 @@ void VertexEditor::draw(const Camera& cam, const Terrain& terrain,
     float size = worldSize(cam, center_);
     glm::mat4 vp = cam.projection() * cam.view();
     lineShader.use();
+    lineShader.setFloat("uAlpha", 1.0f);
 
     auto drawAxis = [&](int axis, const glm::vec3& col) {
         glm::vec3 dir = axisDir(axis, normal_);

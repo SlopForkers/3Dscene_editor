@@ -6,8 +6,10 @@ Camera::Camera() {
 }
 
 void Camera::setViewport(int width, int height) {
-    viewportWidth_ = width;
-    viewportHeight_ = height;
+    // Clamp away from zero: a minimized window reports 0x0 and would make
+    // screenToRay()/projection() divide by zero.
+    viewportWidth_  = std::max(1, width);
+    viewportHeight_ = std::max(1, height);
 }
 
 void Camera::updatePosition() {

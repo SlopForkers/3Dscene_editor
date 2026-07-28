@@ -16,6 +16,11 @@ public:
     static void cursorPosCallback(GLFWwindow* w, double x, double y);
     static void scrollCallback(GLFWwindow* w, double xoff, double yoff);
     static void keyCallback(GLFWwindow* w, int key, int scancode, int action, int mods);
+    static void windowFocusCallback(GLFWwindow* w, int focused);
+
+    // Clear all held-key / held-button state (called on focus loss so keys
+    // released while the window was unfocused don't get "stuck" down).
+    void releaseAll();
 
     bool mouseDown(int b) const { return mouseDown_[b]; }
     bool mousePressed(int b) const { return mousePressed_[b]; }

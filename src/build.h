@@ -1,6 +1,7 @@
 #pragma once
 #include <glad/gl.h>
 #include <glm/glm.hpp>
+#include <cmath>
 #include <string>
 #include <vector>
 
@@ -30,11 +31,12 @@ public:
         float texScale     = 1.0f;              // UV tiling multiplier (Tile mode)
         int   texMode      = 0;                // 0 = Stretch, 1 = Tile
 
-        // Axis-aligned footprint. For yaw near 90°/270° the X and Z swap.
+        // Axis-aligned footprint of the yaw-rotated box: exact projection
+        // (|cos|*w + |sin|*d) for any angle, not just 0/90 degrees.
         glm::vec3 aabbSize() const {
-            float n = std::fmod(std::abs(yaw), 3.14159265f);
-            bool rotated = n > 0.5f && n < 2.5f;
-            return rotated ? glm::vec3(size.z, size.y, size.x) : size;
+            float c = std::abs(std::cos(yaw)), s = std::abs(std::sin(yaw));
+            return glm::vec3(size.x * c + size.z * s, size.y,
+                             size.x * s + size.z * c);
         }
         glm::vec3 min() const { return position - aabbSize() * 0.5f; }
         glm::vec3 max() const { return position + aabbSize() * 0.5f; }
@@ -146,11 +148,6 @@ public:
     int  applyTextureToLine(float startC, float endC, float fixedC,
                             bool alongX, int face);
 
-    // Area placement: fill grid cells within `radius` (XZ disc) around
-    // `worldPos` with foundation blocks, joining any adjacent foundation at the
-    // same Y level. Skips cells already occupied. Returns the number placed.
-    int  paintArea(const Terrain& terrain, const glm::vec3& worldPos,
-                   float radius, BlockType type);
     // Fill a grid-aligned rectangle (world-space corners x0..x1, z0..z1) with
     // blocks. Joins any adjacent foundation at the same Y level. Returns count.
     int  fillRect(const Terrain& terrain,
@@ -165,8 +162,6 @@ public:
     // Compute the wall line parameters (fixed coord + along axis) for placing a
     // wall on the edge of the picked block, given the current wall edge.
     void wallLineParamsFor(const Block& support, float& outFixed, bool& outAlongX) const;
-    // Erase all blocks within `radius` (XZ) of `worldPos`.
-    int  eraseArea(const glm::vec3& worldPos, float radius);
     // Erase all blocks within a grid-aligned rectangle.
     int  eraseRect(float x0, float z0, float x1, float z1);
     // True if a block already occupies grid cell (x,z).

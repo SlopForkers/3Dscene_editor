@@ -69,13 +69,13 @@ void main() {
     }
 
     vec3 N = normalize(vNormal);
-    // Perturb normal with the blended tangent-space normal.
-    vec3 Q = normalize(dFdx(vWorldPos));
-    vec3 T = normalize(dFdy(vWorldPos));
+    // Perturb normal with the blended tangent-space normal. Layer textures
+    // are sampled with uv = worldXZ / tileSize, so the tangent basis is
+    // world +X / +Z projected onto the surface (Gram-Schmidt). This is
+    // camera-independent — the old dFdx/dFdy basis swam with the view.
+    vec3 T = normalize(vec3(1.0, 0.0, 0.0) - N * N.x);
     vec3 B = normalize(cross(N, T));
-    if (dot(cross(N, T), B) < 0.0) B = -B;
-    mat3 TBN = mat3(T, B, N);
-    N = normalize(TBN * normalize(tn));
+    N = normalize(mat3(T, B, N) * normalize(tn));
 
     vec3 L = normalize(uLightDir);
     float diff = max(dot(N, L), 0.0);

@@ -13,6 +13,17 @@ void Input::init(GLFWwindow* window) {
     glfwSetCursorPosCallback(window, cursorPosCallback);
     glfwSetScrollCallback(window, scrollCallback);
     glfwSetKeyCallback(window, keyCallback);
+    glfwSetWindowFocusCallback(window, windowFocusCallback);
+}
+
+void Input::releaseAll() {
+    for (int i = 0; i < 512; ++i) keys_[i] = false;
+    for (int i = 0; i < Count_; ++i) mouseDown_[i] = false;
+}
+
+void Input::windowFocusCallback(GLFWwindow* w, int focused) {
+    Input* in = inputFromWindow(w);
+    if (in && !focused) in->releaseAll();
 }
 
 void Input::newFrame() {

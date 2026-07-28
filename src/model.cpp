@@ -1,5 +1,6 @@
 #include "model.h"
 #include "shader.h"
+#include "sys_util.h"
 #define CGLTF_IMPLEMENTATION
 #include <cgltf.h>
 #include <stb_image.h>
@@ -11,6 +12,37 @@
 #include <cstring>
 #include <filesystem>
 #include <functional>
+
+// cgltf file IO routed through the UTF-8 aware reader so models and their
+// external .bin buffers load from non-ANSI paths on Windows (the default
+// cgltf file callbacks use plain fopen).
+static cgltf_result cgltfReadFile(const cgltf_memory_options* mem,
+                                  const cgltf_file_options*,
+                                  const char* path, cgltf_size* size,
+                                  void** data) {
+    std::vector<char> bytes;
+    if (!readFileBytes(path, bytes) || bytes.empty())
+        return cgltf_result_file_not_found;
+    // Some cgltf entry points (cgltf_load_buffers) forward the caller's
+    // options WITHOUT filling in the default allocators, so alloc_func may
+    // legitimately be null here. Fall back to cgltf's own defaults (they're
+    // visible in this TU because of CGLTF_IMPLEMENTATION).
+    void* (*allocFn)(void*, cgltf_size) =
+        mem->alloc_func ? mem->alloc_func : &cgltf_default_alloc;
+    void* buf = allocFn(mem->user_data, bytes.size());
+    if (!buf) return cgltf_result_out_of_memory;
+    std::memcpy(buf, bytes.data(), bytes.size());
+    *size = bytes.size();
+    *data = buf;
+    return cgltf_result_success;
+}
+
+static void cgltfReleaseFile(const cgltf_memory_options* mem,
+                             const cgltf_file_options*, void* data) {
+    void (*freeFn)(void*, void*) =
+        mem->free_func ? mem->free_func : &cgltf_default_free;
+    freeFn(mem->user_data, data);
+}
 
 static glm::mat4 nodeLocalMatrix(const cgltf_node* node) {
     if (node->has_matrix) {
@@ -61,17 +93,28 @@ void Model::destroy() {
     nodes_.clear();
     meshes_.clear();
     rootNodes_.clear();
+    texCache_.clear();
+    aabbMin_ = aabbMax_ = glm::vec3(0.0f);
+    hasAabb_ = false;
     loaded_ = false;
 }
 
 GLuint Model::loadTextureFromImage(cgltf_image* image, const std::string& baseDir) {
     if (!image) return 0;
 
+    // De-duplicate: the same glTF image referenced by several material slots
+    // is uploaded to the GPU only once per model load.
+    auto it = texCache_.find(image);
+    if (it != texCache_.end()) return it->second;
+
     // Prefer cgltf's buffer_view (embedded) when present, else load from URI.
     stbi_uc* data = nullptr;
     int dataLen = 0;
     std::string path;       // declared at function scope (used by file path branch)
     bool fromFile = false;
+    // Must live at function scope: `data` points into it and is consumed by
+    // stbi_load_from_memory below, after the uri branch has ended.
+    std::vector<unsigned char> decoded;
 
     if (image->buffer_view && image->buffer_view->buffer && image->buffer_view->buffer->data) {
         cgltf_buffer_view* bv = image->buffer_view;
@@ -84,7 +127,6 @@ GLuint Model::loadTextureFromImage(cgltf_image* image, const std::string& baseDi
             if (!comma) return 0;
             const char* b64 = comma + 1;
             size_t b64len = strlen(b64);
-            std::vector<unsigned char> decoded;
             decoded.reserve((b64len * 3) / 4);
             static const int8_t tbl[256] = {
                 -1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,
@@ -115,16 +157,37 @@ GLuint Model::loadTextureFromImage(cgltf_image* image, const std::string& baseDi
             data = decoded.data();
             dataLen = (int)decoded.size();
         } else {
-            path = baseDir + "/" + image->uri;
+            // glTF URIs are percent-encoded; decode so paths with spaces or
+            // non-ASCII characters resolve to real files.
+            std::string uri;
+            uri.reserve(strlen(image->uri));
+            for (const char* u = image->uri; *u; ++u) {
+                if (*u == '%' && u[1] && u[2]) {
+                    auto hex = [](char c) -> int {
+                        if (c >= '0' && c <= '9') return c - '0';
+                        if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+                        if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+                        return -1;
+                    };
+                    int hi = hex(u[1]), lo = hex(u[2]);
+                    if (hi >= 0 && lo >= 0) { uri += (char)(hi * 16 + lo); u += 2; continue; }
+                }
+                uri += *u;
+            }
+            path = baseDir + "/" + uri;
             fromFile = true;
         }
     }
 
     int w = 0, h = 0, ch = 0;
     stbi_uc* pixels = nullptr;
+    std::vector<char> fileBytes;   // keeps the buffer alive until decode done
     if (fromFile) {
         std::replace(path.begin(), path.end(), '\\', '/');
-        pixels = stbi_load(path.c_str(), &w, &h, &ch, 4);
+        if (readFileBytes(path, fileBytes)) {
+            pixels = stbi_load_from_memory((const stbi_uc*)fileBytes.data(),
+                                           (int)fileBytes.size(), &w, &h, &ch, 4);
+        }
     } else if (data) {
         pixels = stbi_load_from_memory(data, dataLen, &w, &h, &ch, 4);
     }
@@ -145,9 +208,11 @@ GLuint Model::loadTextureFromImage(cgltf_image* image, const std::string& baseDi
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
     glBindTexture(GL_TEXTURE_2D, 0);
+    glPixelStorei(GL_UNPACK_ALIGNMENT, 4);   // restore GL default
 
     stbi_image_free(pixels);
     textures_.push_back(tex);
+    texCache_[image] = tex;
     return tex;
 }
 
@@ -167,6 +232,8 @@ static bool readAccessorFloats(cgltf_accessor* acc, std::vector<float>& out) {
 }
 
 // Read an accessor of unsigned int indices (joints) into floats for the GPU.
+// Joint indices are clamped to [0, 255] (the shader's uJointMatrices size) so
+// a corrupt file cannot index out of the uniform array.
 static bool readAccessorJoints(cgltf_accessor* acc, std::vector<float>& out) {
     if (!acc) return false;
     cgltf_size count = acc->count;
@@ -175,7 +242,8 @@ static bool readAccessorJoints(cgltf_accessor* acc, std::vector<float>& out) {
     for (cgltf_size i = 0; i < count; ++i) {
         // cgltf_accessor_read_uint returns cgltf_bool: 1 = success, 0 = failure.
         if (cgltf_accessor_read_uint(acc, i, tmp, 4) == 0) return false;
-        for (int c = 0; c < 4; ++c) out[i * 4 + c] = (float)tmp[c];
+        for (int c = 0; c < 4; ++c)
+            out[i * 4 + c] = (float)std::min(tmp[c], (cgltf_uint)255);
     }
     return true;
 }
@@ -184,6 +252,8 @@ bool Model::loadFromFile(const std::string& path) {
     destroy();
     cgltf_options options;
     memset(&options, 0, sizeof(options));
+    options.file.read = &cgltfReadFile;
+    options.file.release = &cgltfReleaseFile;
     cgltf_data* data = nullptr;
 
     std::string p = path;
@@ -214,7 +284,9 @@ bool Model::loadFromFile(const std::string& path) {
     for (cgltf_size i = 0; i < data->materials_count; ++i) {
         cgltf_material* m = &data->materials[i];
         Material& mat = materials_[i];
-        mat.alphaCutoff = m->alpha_cutoff ? (float)m->alpha_cutoff : 0.5f;
+        // cgltf pre-fills spec defaults (cutoff 0.5, scales 1.0), so an
+        // explicit 0 in the file must be honoured — no `?: default` here.
+        mat.alphaCutoff = (float)m->alpha_cutoff;
         mat.alphaMode = (m->alpha_mode == cgltf_alpha_mode_mask) ? 1 :
                         (m->alpha_mode == cgltf_alpha_mode_blend) ? 2 : 0;
         mat.doubleSided = m->double_sided != 0;
@@ -257,7 +329,7 @@ bool Model::loadFromFile(const std::string& path) {
             if (t && t->image) {
                 mat.normalTex = loadTextureFromImage(t->image, baseDir);
                 mat.hasNormalTex = mat.normalTex != 0;
-                mat.normalScale = m->normal_texture.scale ? (float)m->normal_texture.scale : 1.0f;
+                mat.normalScale = (float)m->normal_texture.scale;
             }
         }
         if (m->occlusion_texture.texture) {
@@ -265,7 +337,7 @@ bool Model::loadFromFile(const std::string& path) {
             if (t && t->image) {
                 mat.occlusionTex = loadTextureFromImage(t->image, baseDir);
                 mat.hasOcclusionTex = mat.occlusionTex != 0;
-                mat.occlusionStrength = m->occlusion_texture.scale ? (float)m->occlusion_texture.scale : 1.0f;
+                mat.occlusionStrength = (float)m->occlusion_texture.scale;
             }
         }
     }
@@ -304,7 +376,10 @@ bool Model::loadFromFile(const std::string& path) {
         }
         if (s->inverse_bind_matrices) {
             std::vector<float> ibm;
-            if (readAccessorFloats(s->inverse_bind_matrices, ibm)) {
+            // Guard against malformed files whose IBM accessor holds fewer
+            // matrices than the skin has joints.
+            if (readAccessorFloats(s->inverse_bind_matrices, ibm) &&
+                ibm.size() >= jc * 16) {
                 for (cgltf_size j = 0; j < jc; ++j) {
                     // glTF stores matrices column-major; glm::mat4 is also
                     // column-major, so copy directly (NO transpose).
@@ -340,11 +415,12 @@ bool Model::loadFromFile(const std::string& path) {
             }
             cgltf_size vertCount = positions.size() / 3;
 
-            // AABB accumulation
+            // Per-primitive local AABB (node transforms are applied later,
+            // once computeNodeGlobals() has run — see below).
             for (cgltf_size v = 0; v < vertCount; ++v) {
                 glm::vec3 p(positions[v * 3 + 0], positions[v * 3 + 1], positions[v * 3 + 2]);
-                if (!hasAabb_) { aabbMin_ = p; aabbMax_ = p; hasAabb_ = true; }
-                else { aabbMin_ = glm::min(aabbMin_, p); aabbMax_ = glm::max(aabbMax_, p); }
+                if (v == 0) { P.aabbMin = p; P.aabbMax = p; }
+                else { P.aabbMin = glm::min(P.aabbMin, p); P.aabbMax = glm::max(P.aabbMax, p); }
             }
 
             // NORMAL
@@ -394,23 +470,20 @@ bool Model::loadFromFile(const std::string& path) {
             }
             P.hasJoints = hasJoints;
 
-            // Indices
+            // Indices. The EBO is ALWAYS uploaded as 32-bit (indices are
+            // widened to GLuint on read), so the draw call must use
+            // GL_UNSIGNED_INT regardless of the source component type.
             std::vector<GLuint> indices;
             if (prim->indices) {
                 cgltf_accessor* acc = prim->indices;
                 indices.resize(acc->count);
                 for (cgltf_size k = 0; k < acc->count; ++k) {
-                    cgltf_uint idx;
+                    cgltf_uint idx = 0;   // read fails (e.g. sparse) -> keep 0
                     cgltf_accessor_read_uint(acc, k, &idx, 1);
                     indices[k] = (GLuint)idx;
                 }
                 P.indexCount = (int)acc->count;
-                switch (acc->component_type) {
-                    case cgltf_component_type_r_8u:  P.indexType = GL_UNSIGNED_BYTE; break;
-                    case cgltf_component_type_r_16u: P.indexType = GL_UNSIGNED_SHORT; break;
-                    case cgltf_component_type_r_32u: P.indexType = GL_UNSIGNED_INT; break;
-                    default: P.indexType = GL_UNSIGNED_INT; break;
-                }
+                P.indexType = GL_UNSIGNED_INT;
             } else {
                 // non-indexed: synthesize
                 indices.resize(vertCount);
@@ -479,15 +552,25 @@ bool Model::loadFromFile(const std::string& path) {
     computeNodeGlobals();
     computeSkinMatrices();
 
-    // Assign each primitive its node index (the node that owns its mesh).
-    for (int ni = 0; ni < (int)nodes_.size(); ++ni) {
-        if (nodes_[ni].meshIndex >= 0) {
-            for (int pi : meshes_[nodes_[ni].meshIndex].primitiveIndices) {
-                primitives_[pi].nodeIndex = ni;
-                primitives_[pi].skinIndex = nodes_[ni].skinIndex;
+    // Model-space AABB: transform each primitive's local AABB by the global
+    // matrix of EVERY node that instances its mesh (a mesh may be referenced
+    // by several nodes; each placement contributes to the bounds).
+    hasAabb_ = false;
+    for (const auto& node : nodes_) {
+        if (node.meshIndex < 0) continue;
+        for (int pi : meshes_[node.meshIndex].primitiveIndices) {
+            const Primitive& P = primitives_[pi];
+            for (int corner = 0; corner < 8; ++corner) {
+                glm::vec3 c((corner & 1) ? P.aabbMax.x : P.aabbMin.x,
+                            (corner & 2) ? P.aabbMax.y : P.aabbMin.y,
+                            (corner & 4) ? P.aabbMax.z : P.aabbMin.z);
+                glm::vec3 w = glm::vec3(node.global * glm::vec4(c, 1.0f));
+                if (!hasAabb_) { aabbMin_ = w; aabbMax_ = w; hasAabb_ = true; }
+                else { aabbMin_ = glm::min(aabbMin_, w); aabbMax_ = glm::max(aabbMax_, w); }
             }
         }
     }
+    if (!hasAabb_) { aabbMin_ = aabbMax_ = glm::vec3(0.0f); }
 
     cgltf_free(data);
     loaded_ = true;
@@ -555,98 +638,59 @@ void Model::applyMaterial(const Material& m, const Shader& shader,
     else glDisable(GL_CULL_FACE);
 }
 
-void Model::render(const Shader& shader) const {
-    if (!loaded_) return;
-    // Bind joint matrices per primitive that has a skin. We set them once
-    // per primitive for simplicity.
-    for (const auto& P : primitives_) {
-        if (P.nodeIndex < 0) continue;
-
-        const Material* mat = (P.materialIndex >= 0 && P.materialIndex < (int)materials_.size())
-                              ? &materials_[P.materialIndex] : nullptr;
-
-        glm::mat4 model = nodes_[P.nodeIndex].global;
-
-        // Per the glTF 2.0 spec, skinned meshes are transformed ONLY by the
-        // joint matrices (jointGlobal * inverseBind); the mesh node's own
-        // world transform must be IDENTITY. Applying the node transform on
-        // top of the skin double-transforms vertices and stretches the model.
-        // For non-skinned meshes the node's global transform IS the model matrix.
-        glm::mat4 effectiveModel;
-        if (P.skinIndex >= 0 && P.skinIndex < (int)skins_.size()) {
-            const Skin& s = skins_[P.skinIndex];
-            GLint loc = glGetUniformLocation(shader.id(), "uJointMatrices[0]");
-            if (loc >= 0) {
-                glUniformMatrix4fv(loc, (GLsizei)s.jointMatrices.size(), GL_FALSE,
-                                  (const GLfloat*)s.jointMatrices.data());
-            }
-            shader.setBool("uHasSkin", true);
-            effectiveModel = glm::mat4(1.0f);   // identity for skinned meshes
-        } else {
-            shader.setBool("uHasSkin", false);
-            effectiveModel = model;
-        }
-        shader.setMat4("uModel", effectiveModel);
-
-        if (mat) applyMaterial(*mat, shader, glm::vec3(0), glm::vec3(0));
-        else {
-            shader.setBool("uHasSkin", P.skinIndex >= 0);
-            shader.setBool("uUnlit", false);
-            shader.setBool("uDoubleSided", false);
-            shader.setInt("uAlphaMode", 0);
-            shader.setBool("uHasBaseColorTex", false);
-            shader.setVec4("uBaseColorFactor", glm::vec4(0.8f));
-            glDisable(GL_BLEND);
-            glEnable(GL_CULL_FACE);
-        }
-
-        glBindVertexArray(P.vao);
-        glDrawElements(GL_TRIANGLES, P.indexCount, P.indexType, 0);
-        glBindVertexArray(0);
-    }
-    // Restore default GL state.
+void Model::applyDefaultMaterial(const Shader& shader) const {
+    // Full reset of every material uniform so state never leaks from the
+    // previously drawn primitive.
+    shader.setBool("uUnlit", false);
+    shader.setBool("uDoubleSided", false);
+    shader.setFloat("uAlphaCutoff", 0.5f);
+    shader.setInt("uAlphaMode", 0);
+    shader.setVec4("uBaseColorFactor", glm::vec4(0.8f));
+    shader.setVec3("uEmissiveFactor", glm::vec3(0.0f));
+    shader.setFloat("uMetallic", 0.0f);
+    shader.setFloat("uRoughness", 1.0f);
+    shader.setFloat("uNormalScale", 1.0f);
+    shader.setFloat("uOcclusionStrength", 1.0f);
+    shader.setBool("uHasBaseColorTex", false);
+    shader.setBool("uHasMetalRoughTex", false);
+    shader.setBool("uHasNormalTex", false);
+    shader.setBool("uHasEmissiveTex", false);
+    shader.setBool("uHasOcclusionTex", false);
     glDisable(GL_BLEND);
     glEnable(GL_CULL_FACE);
 }
 
-void Model::renderInstanced(const Shader& shader, GLuint instanceVbo,
+void Model::renderPrimitive(const Shader& shader, const Primitive& P,
+                            const Node& node, GLuint instanceVbo,
                             int instanceCount) const {
-    if (!loaded_ || instanceCount <= 0) return;
-    shader.setBool("uInstanced", true);
-    for (const auto& P : primitives_) {
-        if (P.nodeIndex < 0) continue;
+    // Per the glTF 2.0 spec, skinned meshes are transformed ONLY by the
+    // joint matrices (jointGlobal * inverseBind); the mesh node's own world
+    // transform must be IDENTITY. Applying the node transform on top of the
+    // skin double-transforms vertices and stretches the model. For
+    // non-skinned meshes the node's global transform IS the model matrix.
+    // Skinning also requires JOINTS_0/WEIGHTS_0 on the primitive itself.
+    bool useSkin = P.hasJoints && node.skinIndex >= 0 &&
+                   node.skinIndex < (int)skins_.size();
+    if (useSkin) {
+        const Skin& s = skins_[node.skinIndex];
+        // Cached-location upload of the joint palette (256 max, see loader).
+        shader.setMat4Array("uJointMatrices",
+                            (const GLfloat*)s.jointMatrices.data(),
+                            (int)s.jointMatrices.size());
+        shader.setBool("uHasSkin", true);
+        shader.setMat4("uModel", glm::mat4(1.0f));   // identity for skinned
+    } else {
+        shader.setBool("uHasSkin", false);
+        shader.setMat4("uModel", node.global);
+    }
 
-        const Material* mat = (P.materialIndex >= 0 && P.materialIndex < (int)materials_.size())
-                              ? &materials_[P.materialIndex] : nullptr;
+    const Material* mat = (P.materialIndex >= 0 && P.materialIndex < (int)materials_.size())
+                          ? &materials_[P.materialIndex] : nullptr;
+    if (mat) applyMaterial(*mat, shader, glm::vec3(0), glm::vec3(0));
+    else applyDefaultMaterial(shader);
 
-        glm::mat4 effectiveModel;
-        if (P.skinIndex >= 0 && P.skinIndex < (int)skins_.size()) {
-            const Skin& s = skins_[P.skinIndex];
-            GLint loc = glGetUniformLocation(shader.id(), "uJointMatrices[0]");
-            if (loc >= 0) {
-                glUniformMatrix4fv(loc, (GLsizei)s.jointMatrices.size(), GL_FALSE,
-                                   (const GLfloat*)s.jointMatrices.data());
-            }
-            shader.setBool("uHasSkin", true);
-            effectiveModel = glm::mat4(1.0f);
-        } else {
-            shader.setBool("uHasSkin", false);
-            effectiveModel = nodes_[P.nodeIndex].global;
-        }
-        shader.setMat4("uModel", effectiveModel);
-
-        if (mat) applyMaterial(*mat, shader, glm::vec3(0), glm::vec3(0));
-        else {
-            shader.setBool("uUnlit", false);
-            shader.setBool("uDoubleSided", false);
-            shader.setInt("uAlphaMode", 0);
-            shader.setBool("uHasBaseColorTex", false);
-            shader.setVec4("uBaseColorFactor", glm::vec4(0.8f));
-            glDisable(GL_BLEND);
-            glEnable(GL_CULL_FACE);
-        }
-
-        glBindVertexArray(P.vao);
+    glBindVertexArray(P.vao);
+    if (instanceCount > 0) {
         // Attach instance buffer as mat4 at locations 6..9 with divisor 1.
         glBindBuffer(GL_ARRAY_BUFFER, instanceVbo);
         for (int c = 0; c < 4; ++c) {
@@ -655,17 +699,43 @@ void Model::renderInstanced(const Shader& shader, GLuint instanceVbo,
                                    (void*)(sizeof(glm::vec4) * c));
             glVertexAttribDivisor(6 + c, 1);
         }
-
         glDrawElementsInstanced(GL_TRIANGLES, P.indexCount, P.indexType, 0,
                                 instanceCount);
-
         for (int c = 0; c < 4; ++c) {
             glDisableVertexAttribArray(6 + c);
             glVertexAttribDivisor(6 + c, 0);
         }
-        glBindVertexArray(0);
+    } else {
+        glDrawElements(GL_TRIANGLES, P.indexCount, P.indexType, 0);
+    }
+    glBindVertexArray(0);
+}
+
+void Model::render(const Shader& shader) const {
+    if (!loaded_) return;
+    // Walk scene nodes so a mesh referenced by several nodes renders once
+    // per placement (glTF node -> mesh instancing).
+    for (const auto& node : nodes_) {
+        if (node.meshIndex < 0) continue;
+        for (int pi : meshes_[node.meshIndex].primitiveIndices)
+            renderPrimitive(shader, primitives_[pi], node);
+    }
+    // Restore the app's default GL state (culling OFF, blending OFF).
+    glDisable(GL_BLEND);
+    glDisable(GL_CULL_FACE);
+}
+
+void Model::renderInstanced(const Shader& shader, GLuint instanceVbo,
+                            int instanceCount) const {
+    if (!loaded_ || instanceCount <= 0) return;
+    shader.setBool("uInstanced", true);
+    for (const auto& node : nodes_) {
+        if (node.meshIndex < 0) continue;
+        for (int pi : meshes_[node.meshIndex].primitiveIndices)
+            renderPrimitive(shader, primitives_[pi], node, instanceVbo,
+                            instanceCount);
     }
     shader.setBool("uInstanced", false);
     glDisable(GL_BLEND);
-    glEnable(GL_CULL_FACE);
+    glDisable(GL_CULL_FACE);
 }

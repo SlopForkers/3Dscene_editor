@@ -30,7 +30,8 @@ light the whole scene under an imported HDR sky — all in one editor.
 - **Procedural noise generation** — Perlin, Simplex, Value, Worley, and Ridge
   noise with fractal Brownian motion (octaves, persistence, lacunarity), blend
   modes (Replace/Add/Subtract/Multiply/Min/Max), exponent shaping, invert, and
-  a live preview thumbnail.
+  a live preview thumbnail. Frequency is measured in cycles across the whole
+  terrain, so the default settings are alias-free at the 256×256 grid.
 
 ### Props & Models
 - **glTF 2.0 / VRM import** — parsed with cgltf. Skinned meshes render in the
@@ -139,7 +140,7 @@ extension:
 
 | Extension | Action |
 |---|---|
-| `.gltf` `.glb` `.vrm` | Import as a model and spawn a prop at the terrain centre |
+| `.gltf` `.glb` `.vrm` | Import as a model and spawn a prop at the camera target |
 | `.hdr` `.png` `.jpg` `.jpeg` `.tga` `.bmp` | Import as the equirectangular skybox |
 | `.scene` | Load a saved scene |
 | `.savetest` | Save the current scene then reload it (round-trip test) |
@@ -160,7 +161,11 @@ extension:
 ├── assets/                   # (gitignored) sample HDR sky & VRM model
 └── src/
     ├── main.cpp              # Entry point (passes CLI args to App)
-    ├── app.{cpp,h}           # Main loop, ImGui panels, input dispatch
+    ├── app.{cpp,h}           # Core loop, init/shutdown, input dispatch, render
+    ├── app_ui.cpp            # ImGui frame, left rail, brush bar, help overlay
+    ├── app_panels.cpp        # One draw*Content() panel per rail category
+    ├── ui_icons.{cpp,h}      # ImDrawList vector icons (brushes, categories)
+    ├── ui_common.h           # Shared UI name helpers
     ├── camera.{cpp,h}        # Orbit camera with ray casting
     ├── terrain.{cpp,h}       # Heightfield, brushes, splat layers, raycast
     ├── noise.h               # Header-only procedural noise (Perlin/Simplex/…)
@@ -171,8 +176,9 @@ extension:
     ├── build.{cpp,h}         # Snap-based block building + face textures
     ├── vertex_edit.{cpp,h}   # Vertex-level terrain editing gizmo
     ├── skybox.{cpp,h}        # Cubemap skybox + HDR equirect import
-    ├── scene.{cpp,h}         # .scene save/load (JSON + binary)
-    ├── file_dialog.{cpp,h}   # Native open/save file dialogs (Win32)
+    ├── scene.{cpp,h}         # .scene save/load (JSON + binary; format in scene.h)
+    ├── file_dialog.{cpp,h}   # Native open/save file dialogs (Win32, UTF-8)
+    ├── sys_util.{cpp,h}      # UTF-8 file IO (wide Win32 APIs on Windows)
     ├── brush.{cpp,h}         # Brush cursor ring rendering
     ├── shader.{cpp,h}        # Shader loading and uniform helpers
     └── input.{cpp,h}         # Centralized GLFW input state
@@ -183,11 +189,11 @@ extension:
 - **Input** is centralized in a single `Input` singleton fed by GLFW callbacks
   and polled each frame, accumulating mouse deltas across multiple callbacks so
   fast motion isn't lost.
-- **Terrain** stores heights in a flat array and uploads vertices to a static
-  VBO/EBO. Brush edits dirty only the affected region, and normals are
-  recomputed incrementally over the edited bounding box rather than the whole
-  grid. Texture layers are kept as CPU pixels and rebuilt into a GL texture
-  array cheaply when edited.
+- **Terrain** stores heights in a flat array and uploads vertices to a
+  persistent VBO/EBO (buffer orphaning on edit to avoid pipeline stalls).
+  Brush edits recompute normals incrementally over the edited bounding box
+  rather than the whole grid. Texture layers are kept as CPU pixels and
+  rebuilt into a GL texture array cheaply when edited.
 - **Picking** unprojects the cursor to a world-space ray and intersects it
   with the heightfield for painting, the brush cursor, vegetation, and block
   placement; prop selection uses an AABB slab test against the ray.

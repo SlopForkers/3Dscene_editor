@@ -4,10 +4,18 @@
 #include <iostream>
 
 Shader::~Shader() {
+    // NOTE: this must run while a GL context is current. App::shutdown()
+    // calls destroy() explicitly before glfwTerminate(), so by the time the
+    // destructor runs program_ is already 0.
+    destroy();
+}
+
+void Shader::destroy() {
     if (program_) {
         glDeleteProgram(program_);
         program_ = 0;
     }
+    uniformCache_.clear();
 }
 
 std::string Shader::readFile(const std::string& path) {
@@ -52,6 +60,9 @@ bool Shader::loadFromFile(const std::string& vertexPath, const std::string& frag
         return false;
     }
 
+    // Release any previously loaded program (and its cached locations) so a
+    // reload doesn't leak it.
+    destroy();
     program_ = glCreateProgram();
     glAttachShader(program_, vs);
     glAttachShader(program_, fs);
@@ -97,6 +108,10 @@ void Shader::setVec4(const std::string& name, const glm::vec4& v) const {
 }
 void Shader::setMat4(const std::string& name, const glm::mat4& m) const {
     glUniformMatrix4fv(location(name), 1, GL_FALSE, &m[0][0]);
+}
+void Shader::setMat4Array(const std::string& name, const float* data, int count) const {
+    // glGetUniformLocation on the bare array name resolves element 0.
+    glUniformMatrix4fv(location(name), count, GL_FALSE, data);
 }
 void Shader::setBool(const std::string& name, bool value) const {
     setInt(name, value ? 1 : 0);

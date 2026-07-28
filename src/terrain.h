@@ -99,8 +99,8 @@ public:
     // Add a new layer from an albedo image file. Returns the new index, or -1
     // on failure / when MAX_LAYERS is reached.
     int  addLayer(const std::string& albedoPath);
-    // Remove a layer by index. Splats referencing it are not rewritten; the
-    // caller may want to resetSplat() afterwards.
+    // Remove a layer by index. Splat weights are remapped so painted areas
+    // keep their textures (layers above the removed one shift down).
     void removeLayer(int layerIndex);
     void resetSplat();   // clear splat to layer 0 only
 
@@ -137,7 +137,6 @@ private:
 
     GLuint vao_ = 0, vbo_ = 0, ebo_ = 0;
     int indexCount_ = 0;
-    bool  dirty_ = false;
 
     // Texture layers + multi-splat map.
     std::vector<Layer>   layers_;     // up to MAX_LAYERS

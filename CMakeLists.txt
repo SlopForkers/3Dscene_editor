@@ -118,6 +118,11 @@ set(SOURCES
     src/main.cpp
     src/app.cpp
     src/app.h
+    src/app_ui.cpp
+    src/app_panels.cpp
+    src/ui_icons.cpp
+    src/ui_icons.h
+    src/ui_common.h
     src/camera.cpp
     src/camera.h
     src/shader.cpp
@@ -146,6 +151,8 @@ set(SOURCES
     src/build.h
     src/scene.cpp
     src/scene.h
+    src/sys_util.cpp
+    src/sys_util.h
 )
 
 add_executable(scene_editor ${SOURCES})

@@ -39,9 +39,17 @@ public:
     int selectionCount() const { return (int)selected_.size(); }
     bool hasSelection() const { return !selected_.empty(); }
     bool dragging() const { return dragging_; }
+    // Centre of the current selection (for area reprojection after edits).
+    glm::vec3 selectionCenter() const { return center_; }
+    // Abort an in-progress drag (e.g. the tool was switched mid-drag).
+    void cancelDrag() { dragging_ = false; activeAxis_ = -1; }
 
     DragMode dragMode() const { return dragMode_; }
     void setDragMode(DragMode m) { dragMode_ = m; }
+
+    // Mouse coordinates are in WINDOW pixels, the camera viewport is in
+    // FRAMEBUFFER pixels; on HiDPI displays the ratio != 1. Set per frame.
+    void setDpiScale(float sx, float sy) { dpiScaleX_ = sx; dpiScaleY_ = sy; }
 
 private:
     struct Cell { int ix, iz; };
@@ -53,14 +61,14 @@ private:
     bool dragging_  = false;
     int  activeAxis_ = -1;     // 0=X,1=Y,2=Z, 3=normal
     int  hoverAxis_  = -1;
+    float dpiScaleX_ = 1.0f, dpiScaleY_ = 1.0f;
 
     // Saved at drag start.
-    float startHeightDelta_ = 0.0f;
     float startCenterY_ = 0.0f;
     std::vector<float> startHeights_;   // baseline heights in the affected box
     int boxX0_ = 0, boxZ0_ = 0, boxX1_ = 0, boxZ1_ = 0;
-    glm::vec3 dragStartWorld_ = glm::vec3(0.0f);
-    glm::vec3 lastGizmoPos_   = glm::vec3(0.0f);
+    glm::vec3 dragStartWorld_ = glm::vec3(0.0f); // falloff centre (selection centre)
+    glm::vec3 dragStartHit_   = glm::vec3(0.0f); // ray-plane hit at press time
 
     DragMode dragMode_ = Vertical;
 
@@ -68,7 +76,7 @@ private:
     GLuint vaoPoint_ = 0, vboPoint_ = 0;
 
     float worldSize(const Camera& cam, const glm::vec3& pos) const;
-    int  axisCount() const;
+    void  mouseRay(const Camera& cam, glm::vec3& outOrigin, glm::vec3& outDir) const;
     glm::vec3 axisDir(int axis, const glm::vec3& n) const;
     bool pickAxis(const Camera& cam, const glm::vec3& pos,
                  const glm::vec3& n, float size, int& outAxis);

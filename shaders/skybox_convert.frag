@@ -7,11 +7,13 @@ const float PI = 3.14159265359;
 void main() {
     float tx = vUv.x * 2.0 - 1.0;
     float ty = vUv.y * 2.0 - 1.0;
+    // Texel -> direction, following the GL cubemap face layout (spec table
+    // "Cube Map Face Selection"): for +/-Y the Z sign is NOT flipped.
     vec3 dir;
     if      (uFace == 0) dir = vec3( 1.0, -ty, -tx); // +X
     else if (uFace == 1) dir = vec3(-1.0, -ty,  tx); // -X
-    else if (uFace == 2) dir = vec3( tx,  1.0, -ty); // +Y
-    else if (uFace == 3) dir = vec3( tx, -1.0,  ty); // -Y
+    else if (uFace == 2) dir = vec3( tx,  1.0,  ty); // +Y
+    else if (uFace == 3) dir = vec3( tx, -1.0, -ty); // -Y
     else if (uFace == 4) dir = vec3( tx, -ty,  1.0); // +Z
     else                 dir = vec3(-tx, -ty, -1.0); // -Z
     dir = normalize(dir);

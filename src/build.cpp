@@ -1,12 +1,14 @@
 #include "build.h"
 #include "shader.h"
 #include "terrain.h"
+#include "sys_util.h"
 #include <stb_image.h>
 #include <glm/gtc/matrix_transform.hpp>
 #include <algorithm>
 #include <cmath>
 #include <cstring>
 #include <iostream>
+#include <vector>
 
 BuildSystem::~BuildSystem() { destroy(); }
 
@@ -141,7 +143,9 @@ bool BuildSystem::computePlacement(const Terrain& terrain,
         const Block* b = findBlock(id);
         if (b) {
             outSize = glm::vec3(blockW_, blockH_, blockW_);
-            glm::vec3 center = b->position + hitNormal * (b->size * 0.5f + outSize * 0.5f);
+            // Use the world-axis-aligned size (yaw-aware) — for a rotated
+            // block the raw size.x/size.z no longer match the world axes.
+            glm::vec3 center = b->position + hitNormal * (b->aabbSize() * 0.5f + outSize * 0.5f);
             center.x = snapToGrid(center.x);
             center.z = snapToGrid(center.z);
             if (hitNormal.y > 0.5f) {
@@ -157,6 +161,10 @@ bool BuildSystem::computePlacement(const Terrain& terrain,
                 center.y = b->position.y;
                 outType = Foundation;
             }
+            // Never place a foundation into an already-occupied cell —
+            // a duplicate would z-fight inside the existing block.
+            if (outType == Foundation && cellOccupied(center.x, center.z))
+                return false;
             outCenter = center;
             return true;
         }
@@ -194,6 +202,8 @@ bool BuildSystem::computePlacement(const Terrain& terrain,
             float topY = th + blockH_ * (1.0f - sunkDepth_);
             centerY = topY - blockH_ * 0.5f;
         }
+        // Skip occupied cells (duplicate blocks z-fight inside each other).
+        if (cellOccupied(sx, sz)) return false;
         outCenter = glm::vec3(sx, centerY, sz);
         outType = Foundation;
         return true;
@@ -400,10 +410,17 @@ int BuildSystem::findBlockTextureByPath(const std::string& path) const {
 int BuildSystem::loadBlockTexture(const std::string& path) {
     int existing = findBlockTextureByPath(path);
     if (existing >= 0) return existing;
-    int w = 0, h = 0, ch = 0;
-    stbi_uc* pixels = stbi_load(path.c_str(), &w, &h, &ch, 4);
-    if (!pixels) {
+    // UTF-8 aware read (stbi_load can't open non-ANSI paths on Windows).
+    std::vector<char> bytes;
+    if (!readFileBytes(path, bytes)) {
         std::cerr << "BuildSystem: failed to load texture: " << path << "\n";
+        return -1;
+    }
+    int w = 0, h = 0, ch = 0;
+    stbi_uc* pixels = stbi_load_from_memory((const stbi_uc*)bytes.data(),
+                                            (int)bytes.size(), &w, &h, &ch, 4);
+    if (!pixels) {
+        std::cerr << "BuildSystem: failed to decode texture: " << path << "\n";
         return -1;
     }
     GLuint tex = 0;

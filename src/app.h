@@ -25,7 +25,7 @@ public:
     int run(const std::vector<std::string>& importArgs = {});
 
     // Left-rail categories (group tool modes and setting panels). Public so
-    // the file-scope icon helpers in app.cpp can switch on them.
+    // the icon helpers in ui_icons.cpp can switch on them.
     enum Category {
         CatBrush = 0, CatVertex, CatProps, CatVegetation,  // tool categories
         CatBuild,                                          // building blocks
@@ -73,7 +73,7 @@ private:
 
     int activeCategory_ = CatBrush;
 
-    // Import a glTF/VRM file and spawn a prop at the terrain centre.
+    // Import a glTF/VRM file and spawn a prop at the camera target.
     void importModel(const std::string& path);
 
     GLFWwindow* window_ = nullptr;
@@ -101,8 +101,6 @@ private:
     bool painting_ = false;
     bool orbiting_ = false;
     bool panning_  = false;
-    glm::vec3 lastPaintPoint_ = glm::vec3(0.0f);
-    bool  hasPaintPoint_ = false;
 
     // Prop interaction
     Gizmo gizmo_;
@@ -127,7 +125,6 @@ private:
 
     // Procedural noise generator state (Noise category panel).
     Noise::Params noiseParams_;
-    Noise::Params lastNoiseApplied_{};  // snapshot for change detection
     GLuint noiseTex_ = 0;               // preview texture (RGBA8, previewSz^2)
     bool   noisePreviewDirty_ = true;
     bool   realtimeNoise_ = false;
@@ -181,5 +178,20 @@ private:
 
     // Selection box wireframe VAO/VBO (unit cube, reused per frame).
     GLuint boxVao_ = 0, boxVbo_ = 0;
+    // Persistent VAO/VBO for the build-drag preview lines (re-uploaded per
+    // frame instead of creating/destroying GL objects every frame).
+    GLuint dragVao_ = 0, dragVbo_ = 0;
+
+    bool imguiInitialized_ = false;
+    // Erase flag for the build drag, captured at PRESS time (checking Ctrl at
+    // release would let a mid-drag Ctrl press turn "build" into "erase").
+    bool  buildDragErase_ = false;
+
+    // Native window handle for owning file dialogs (HWND on Windows).
+    void* nativeWindow() const;
+    // World-space ray under the cursor. Mouse coords come from GLFW in
+    // window pixels; the camera viewport is in framebuffer pixels, so the
+    // HiDPI ratio is applied here (once, centrally).
+    void cursorRay(glm::vec3& outOrigin, glm::vec3& outDir) const;
 };
 

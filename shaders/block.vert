@@ -13,6 +13,8 @@ void main() {
     vec4 wp = uModel * vec4(aPos, 1.0);
     vWorldPos = wp.xyz;
     vLocalPos = aPos;
-    vNormal = mat3(uModel) * aNormal;
+    // Walls are non-uniformly scaled (thin plates), so the normal matrix
+    // (inverse-transpose) is required — plain mat3(uModel) skews normals.
+    vNormal = normalize(transpose(inverse(mat3(uModel))) * aNormal);
     gl_Position = uViewProj * wp;
 }

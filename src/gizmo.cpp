@@ -146,19 +146,16 @@ static bool rayPlane(const glm::vec3& ro, const glm::vec3& rd,
     return true;
 }
 
+void Gizmo::mouseRay(const Camera& cam, glm::vec3& outOrigin, glm::vec3& outDir) const {
+    float sx = (float)g_input.mouseX() * dpiScaleX_;
+    float sy = (float)g_input.mouseY() * dpiScaleY_;
+    cam.screenToRay(sx, sy, outOrigin, outDir);
+    outDir = glm::normalize(outDir);
+}
+
 bool Gizmo::pickAxis(const Camera& cam, const glm::vec3& pos, float size, int& outAxis) {
-    double sx = g_input.mouseX() * (double)cam.viewportWidth()  / (double)cam.viewportWidth();
-    double sy = g_input.mouseY() * (double)cam.viewportHeight() / (double)cam.viewportHeight();
-    // Note: viewportWidth/Height here are framebuffer dims; convert from window.
-    (void)sx; (void)sy;
-    // Use camera's screenToRay with window coords scaled to framebuffer.
-    int fbW = cam.viewportWidth(), fbH = cam.viewportHeight();
-    // We don't have window size here; g_input mouse is in window coords.
-    // The caller (App) already scales; to keep this self-contained we
-    // approximate using framebuffer == window (true when DPI scale == 1).
     glm::vec3 ro, rd;
-    cam.screenToRay((float)g_input.mouseX(), (float)g_input.mouseY(), ro, rd);
-    rd = glm::normalize(rd);
+    mouseRay(cam, ro, rd);
 
     float tol = size * 0.12f;
     float bestDist = 1e30f;
@@ -177,8 +174,7 @@ bool Gizmo::pickAxis(const Camera& cam, const glm::vec3& pos, float size, int& o
 
 bool Gizmo::pickRing(const Camera& cam, const glm::vec3& pos, float size, int& outAxis) {
     glm::vec3 ro, rd;
-    cam.screenToRay((float)g_input.mouseX(), (float)g_input.mouseY(), ro, rd);
-    rd = glm::normalize(rd);
+    mouseRay(cam, ro, rd);
 
     float tol = size * 0.12f;
     float bestDist = 1e30f;
@@ -213,15 +209,18 @@ bool Gizmo::handleInput(const Camera& cam, const glm::vec3& pos,
     if (dragging_) {
         float size = worldSize(cam, pos);
         glm::vec3 ro, rd;
-        cam.screenToRay((float)g_input.mouseX(), (float)g_input.mouseY(), ro, rd);
-        rd = glm::normalize(rd);
+        mouseRay(cam, ro, rd);
 
         if (mode_ == Translate || mode_ == Scale) {
             // Plane through the axis, facing the camera. Normal = camera dir
             // with the axis component removed (so the plane contains the axis).
             glm::vec3 axis = axisDir(activeAxis_);
             glm::vec3 camDir = glm::normalize(cam.position() - pos);
-            glm::vec3 n = glm::normalize(camDir - axis * glm::dot(camDir, axis));
+            glm::vec3 n = camDir - axis * glm::dot(camDir, axis);
+            // Camera exactly on the axis line -> degenerate normal; fall back
+            // to any stable plane containing the axis (avoids NaN).
+            if (glm::dot(n, n) < 1e-8f) n = planeBasisU(activeAxis_);
+            else n = glm::normalize(n);
             glm::vec3 hit;
             if (!rayPlane(ro, rd, pos, n, hit)) return true;
             float curT = glm::dot(hit - pos, axis);
@@ -270,8 +269,7 @@ bool Gizmo::handleInput(const Camera& cam, const glm::vec3& pos,
 
             // Record the initial interaction point.
             glm::vec3 ro, rd;
-            cam.screenToRay((float)g_input.mouseX(), (float)g_input.mouseY(), ro, rd);
-            rd = glm::normalize(rd);
+            mouseRay(cam, ro, rd);
             if (mode_ == Rotate) {
                 glm::vec3 hitPt;
                 if (rayPlane(ro, rd, pos, axisDir(picked), hitPt)) {
@@ -283,7 +281,9 @@ bool Gizmo::handleInput(const Camera& cam, const glm::vec3& pos,
             } else {
                 glm::vec3 axis = axisDir(picked);
                 glm::vec3 camDir = glm::normalize(cam.position() - pos);
-                glm::vec3 n = glm::normalize(camDir - axis * glm::dot(camDir, axis));
+                glm::vec3 n = camDir - axis * glm::dot(camDir, axis);
+                if (glm::dot(n, n) < 1e-8f) n = planeBasisU(picked);
+                else n = glm::normalize(n);
                 glm::vec3 hitPt;
                 if (rayPlane(ro, rd, pos, n, hitPt))
                     startT_ = glm::dot(hitPt - pos, axis);
@@ -312,6 +312,7 @@ void Gizmo::draw(const Camera& cam, const glm::vec3& pos, const Shader& lineShad
     glm::mat4 vp = cam.projection() * cam.view();
 
     lineShader.use();
+    lineShader.setFloat("uAlpha", 1.0f);
     glLineWidth(3.0f);
 
     if (mode_ == Rotate) {

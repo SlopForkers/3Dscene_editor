@@ -38,16 +38,23 @@ public:
     Mode mode() const { return mode_; }
     void setMode(Mode m) { mode_ = m; }
     bool dragging() const { return dragging_; }
+    // Abort an in-progress drag (e.g. the tool was switched mid-drag).
+    void cancelDrag() { dragging_ = false; activeAxis_ = -1; }
+
+    // Mouse coordinates come from GLFW in WINDOW pixels while the camera
+    // viewport is in FRAMEBUFFER pixels; on HiDPI displays the ratio != 1.
+    // The app sets this once per frame.
+    void setDpiScale(float sx, float sy) { dpiScaleX_ = sx; dpiScaleY_ = sy; }
 
 private:
     Mode mode_ = Translate;
     int  activeAxis_ = -1;   // 0=X, 1=Y, 2=Z
     int  hoverAxis_  = -1;
     bool dragging_   = false;
+    float dpiScaleX_ = 1.0f, dpiScaleY_ = 1.0f;
 
     // Drag state (captured at press).
     Transform startTransform_;
-    glm::vec3 startHit_      = glm::vec3(0.0f);  // initial ray-plane hit
     float     startT_        = 0.0f;             // signed distance along axis
     float     startAngle_    = 0.0f;             // for rotate
 
@@ -58,6 +65,9 @@ private:
     float pixelSize_ = 90.0f;   // gizmo on-screen size in pixels
 
     float worldSize(const Camera& cam, const glm::vec3& pos) const;
+    // Build a world ray from the current mouse position, applying the DPI
+    // scale so window coords land correctly in the framebuffer viewport.
+    void  mouseRay(const Camera& cam, glm::vec3& outOrigin, glm::vec3& outDir) const;
     glm::vec3 axisColor(int axis, bool active, bool hover) const;
     glm::mat4 axisRotation(int axis) const;          // align +X to the axis
     glm::mat4 ringRotation(int axis) const;          // ring's normal -> axis

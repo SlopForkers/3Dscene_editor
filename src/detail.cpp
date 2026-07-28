@@ -8,7 +8,7 @@
 #include <glm/gtc/matrix_transform.hpp>
 
 namespace {
-// Deterministic per-call RNG so repeated strokes don't shimmer.
+// Shared RNG for painting; every stroke advances it, so strokes differ.
 std::mt19937& rng() {
     static std::mt19937 g(0xC0FFEEu);
     return g;
@@ -47,23 +47,21 @@ int DetailSystem::addPrototype(std::shared_ptr<Model> model,
 
 void DetailSystem::removePrototype(int index) {
     if (index < 0 || index >= (int)prototypes_.size()) return;
-    int last = (int)prototypes_.size() - 1;
     // Remove instances that use the prototype being deleted.
     instances_.erase(std::remove_if(instances_.begin(), instances_.end(),
         [index](const Instance& i) { return i.prototypeIndex == index; }),
         instances_.end());
-    // Re-point instances that used the last slot to the freed slot.
-    if (index != last) {
-        for (auto& i : instances_)
-            if (i.prototypeIndex == last) i.prototypeIndex = index;
-    }
+    // erase() shifts every entry past `index` down by one, so instance
+    // indices must shift the same way (NOT swap-with-last — that would
+    // point surviving instances at the wrong prototypes).
+    for (auto& i : instances_)
+        if (i.prototypeIndex > index) --i.prototypeIndex;
     prototypes_.erase(prototypes_.begin() + index);
-    if (activePrototype_ == index || activePrototype_ == last) {
-        activePrototype_ = prototypes_.empty() ? -1 :
-                           std::min(index, (int)prototypes_.size() - 1);
-    } else if (activePrototype_ > index) {
+    if (prototypes_.empty()) activePrototype_ = -1;
+    else if (activePrototype_ == index)
+        activePrototype_ = std::min(index, (int)prototypes_.size() - 1);
+    else if (activePrototype_ > index)
         --activePrototype_;
-    }
 }
 
 void DetailSystem::clearPrototypes() {
@@ -111,9 +109,11 @@ void DetailSystem::paint(const Terrain& terrain, const glm::vec3& worldPos,
         float h = terrain.heightAtWorld(wx, wz);
 
         Instance inst;
-        inst.position = glm::vec3(wx, h - bottom * baseScale, wz);
-        inst.yaw = randRange(0.0f, 2.0f * 3.14159265f) * proto.randomYaw;
+        // Compute the scale FIRST and ground the instance with its final
+        // scale, so reproject() (which uses i.scale) lands on the same Y.
         inst.scale = baseScale * randRange(proto.minScale, proto.maxScale);
+        inst.position = glm::vec3(wx, h - bottom * inst.scale, wz);
+        inst.yaw = randRange(0.0f, 2.0f * 3.14159265f) * proto.randomYaw;
         inst.prototypeIndex = activePrototype_;
         instances_.push_back(inst);
     }
@@ -179,7 +179,8 @@ void DetailSystem::render(const Shader& shader, const glm::mat4& viewProj,
         proto.model->renderInstanced(shader, instanceVbo_,
                                      (int)instanceMatrices_.size());
     }
-    // Restore default GL state tweaked by materials.
+    // Restore the app's default GL state (culling OFF, blending OFF) —
+    // applyMaterial() may have enabled culling for single-sided materials.
     glDisable(GL_BLEND);
-    glEnable(GL_CULL_FACE);
+    glDisable(GL_CULL_FACE);
 }

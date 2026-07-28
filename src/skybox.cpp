@@ -1,5 +1,6 @@
 #include "skybox.h"
 #include "shader.h"
+#include "sys_util.h"
 #include <stb_image.h>
 #include <glm/glm.hpp>
 #include <iostream>
@@ -46,6 +47,8 @@ Skybox::~Skybox() {
 }
 
 bool Skybox::create() {
+    destroy();   // safe no-op on first call; avoids leaking on re-create
+
     // Skybox cube.
     glGenVertexArrays(1, &vao_);
     glGenBuffers(1, &vbo_);
@@ -119,10 +122,21 @@ bool Skybox::loadEquirect(Shader& convertShader, const std::string& path) {
     // stbi_loadf handles both HDR (.hdr/.exr) and LDR images, returning float
     // in 0..1 for LDR and the full HDR range for .hdr. Flip vertically so the
     // resulting OpenGL texture has v=0 at the south pole (matching the
-    // latitude formula used in the convert shader).
+    // latitude formula used in the convert shader). The file is read through
+    // the UTF-8 aware helper first (stbi_load can't open non-ANSI paths).
+    std::vector<char> fileBytes;
+    if (!readFileBytes(path, fileBytes)) {
+        std::cerr << "Skybox: failed to open equirectangular image: " << path << "\n";
+        return false;
+    }
+    // The rest of the pipeline works in display (sRGB) space with no gamma
+    // pass, so keep LDR panoramas in sRGB instead of stb's default pow(2.2)
+    // linearization, which would visibly darken them.
+    stbi_ldr_to_hdr_gamma(1.0f);
     stbi_set_flip_vertically_on_load(true);
     int w = 0, h = 0, c = 0;
-    float* data = stbi_loadf(path.c_str(), &w, &h, &c, 3);
+    float* data = stbi_loadf_from_memory((const stbi_uc*)fileBytes.data(),
+                                         (int)fileBytes.size(), &w, &h, &c, 3);
     stbi_set_flip_vertically_on_load(false);
     if (!data) {
         std::cerr << "Skybox: failed to load equirectangular image: " << path << "\n";
@@ -137,7 +151,9 @@ bool Skybox::loadEquirect(Shader& convertShader, const std::string& path) {
     glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB16F, w, h, 0, GL_RGB, GL_FLOAT, data);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    // Equirect wraps around in longitude: REPEAT on S or the bilinear filter
+    // leaves a thin seam at the 0/360° longitude join.
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
     stbi_image_free(data);
 
@@ -186,8 +202,9 @@ bool Skybox::loadEquirect(Shader& convertShader, const std::string& path) {
         glDrawArrays(GL_TRIANGLES, 0, 6);
     }
 
-    // Restore state.
+    // Restore state (the app's default is culling OFF; depth testing was ON).
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    glBindVertexArray(0);
     glDeleteFramebuffers(1, &fbo);
     glDeleteTextures(1, &eqTex);
     glViewport(savedViewport[0], savedViewport[1], savedViewport[2], savedViewport[3]);
@@ -219,12 +236,14 @@ void Skybox::genFaceProcedural(int face, int size, std::vector<float>& buf) {
         for (int x = 0; x < size; ++x) {
             const float tx = 2.0f * (x + 0.5f) / size - 1.0f;
             const float ty = 2.0f * (y + 0.5f) / size - 1.0f;
+            // Same texel->direction mapping as skybox_convert.frag (GL spec):
+            // +/-Y keep the Z sign unflipped.
             glm::vec3 dir(0.0f);
             switch (face) {
                 case 0: dir = glm::vec3( 1.0f, -ty,  -tx); break; // +X
                 case 1: dir = glm::vec3(-1.0f, -ty,   tx); break; // -X
-                case 2: dir = glm::vec3( tx,   1.0f, -ty); break; // +Y
-                case 3: dir = glm::vec3( tx,  -1.0f,  ty); break; // -Y
+                case 2: dir = glm::vec3( tx,   1.0f,  ty); break; // +Y
+                case 3: dir = glm::vec3( tx,  -1.0f, -ty); break; // -Y
                 case 4: dir = glm::vec3( tx,  -ty,   1.0f); break; // +Z
                 case 5: dir = glm::vec3(-tx,  -ty,  -1.0f); break; // -Z
             }
@@ -244,6 +263,10 @@ void Skybox::genFaceProcedural(int face, int size, std::vector<float>& buf) {
 
 void Skybox::draw(Shader& shader, const glm::mat4& viewProj, float exposure) {
     if (!tex_ || !vao_) return;
+    // The camera is always INSIDE the cube, so its (outward-wound) faces are
+    // all back-facing. Face culling must be off; don't rely on the caller's
+    // state — model rendering enables GL_CULL_FACE as a side effect.
+    glDisable(GL_CULL_FACE);
     shader.use();
     shader.setMat4("uViewProj", viewProj);
     shader.setFloat("uExposure", exposure);

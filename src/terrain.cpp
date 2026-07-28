@@ -1,5 +1,6 @@
 #include "terrain.h"
 #include "shader.h"
+#include "sys_util.h"
 #include <stb_image.h>
 #include <stb_image_resize2.h>
 #include <cmath>
@@ -8,6 +9,16 @@
 #include <random>
 #include <cstdio>
 #include <cstring>
+
+// Load an image as RGBA8 via the UTF-8 aware file reader (stbi_load itself
+// can't open non-ANSI paths on Windows).
+static stbi_uc* loadImageRgba(const std::string& path, int& w, int& h) {
+    std::vector<char> bytes;
+    if (!readFileBytes(path, bytes)) return nullptr;
+    int ch = 0;
+    return stbi_load_from_memory((const stbi_uc*)bytes.data(), (int)bytes.size(),
+                                 &w, &h, &ch, 4);
+}
 
 Terrain::Terrain(int gridX, int gridZ, float worldSize)
     : gridX_(gridX), gridZ_(gridZ), worldSize_(worldSize) {
@@ -57,7 +68,6 @@ void Terrain::create() {
                           (void*)offsetof(Vertex, normal));
 
     glBindVertexArray(0);
-    dirty_ = false;
 
     initTextureLayers();
 }
@@ -107,8 +117,10 @@ bool Terrain::applyBrush(const BrushParams& bp, const glm::vec3& worldPos) {
     float cellZ = worldSize_ / float(gridZ_ - 1);
     float r = bp.radius;
 
-    int ixCenter = int((worldPos.x / worldSize_ + 0.5f) * (gridX_ - 1));
-    int izCenter = int((worldPos.z / worldSize_ + 0.5f) * (gridZ_ - 1));
+    // Round (not truncate) so the brush footprint stays centred on the
+    // cursor instead of being biased by half a cell towards -X/-Z.
+    int ixCenter = int(std::round((worldPos.x / worldSize_ + 0.5f) * (gridX_ - 1)));
+    int izCenter = int(std::round((worldPos.z / worldSize_ + 0.5f) * (gridZ_ - 1)));
     int spanX = int(r / cellX) + 1;
     int spanZ = int(r / cellZ) + 1;
 
@@ -165,7 +177,10 @@ bool Terrain::applyBrush(const BrushParams& bp, const glm::vec3& worldPos) {
     }
 
     if (bp.type == BrushParams::Smooth) {
-        // Two-pass: snapshot the affected region first.
+        // Two-pass: snapshot the affected region first and read the 3x3
+        // neighbourhood from the SNAPSHOT (reading the live array would make
+        // the result depend on traversal order — Gauss-Seidel smearing).
+        // Padded by 1 so border vertices see unmodified neighbours.
         int w = x1 - x0 + 1;
         int h = z1 - z0 + 1;
         std::vector<float> snap(w * h);
@@ -173,6 +188,14 @@ bool Terrain::applyBrush(const BrushParams& bp, const glm::vec3& worldPos) {
             for (int ix = x0; ix <= x1; ++ix)
                 snap[(iz - z0) * w + (ix - x0)] = getH(ix, iz);
 
+        // strength > 1 would make the relaxation diverge (oscillating
+        // checkerboard), so clamp the blend factor like the Set brush does.
+        float k = std::min(1.0f, bp.strength);
+        auto snapH = [&](int ix, int iz) {
+            ix = clampIX(ix); iz = clampIZ(iz);
+            if (ix < x0 || ix > x1 || iz < z0 || iz > z1) return getH(ix, iz);
+            return snap[(iz - z0) * w + (ix - x0)];
+        };
         for (int iz = z0; iz <= z1; ++iz) {
             for (int ix = x0; ix <= x1; ++ix) {
                 float wx = worldX(ix);
@@ -181,23 +204,26 @@ bool Terrain::applyBrush(const BrushParams& bp, const glm::vec3& worldPos) {
                                     (wz - worldPos.z) * (wz - worldPos.z));
                 float f = falloff(d, r, bp.falloff);
                 if (f <= 0.0f) continue;
-                // Average 3x3 neighbourhood from the snapshot.
                 float sum = 0.0f, cnt = 0.0f;
                 for (int dz = -1; dz <= 1; ++dz)
                     for (int dx = -1; dx <= 1; ++dx) {
-                        int sx = ix + dx, sz = iz + dz;
-                        sum += heights_[idx(clampIX(sx), clampIZ(sz))];
+                        sum += snapH(ix + dx, iz + dz);
                         cnt += 1.0f;
                     }
                 float avg = sum / cnt;
-                float cur = heights_[idx(ix, iz)];
-                float nh = cur + (avg - cur) * f * bp.strength;
-                setH(ix, iz, nh);
+                float cur = snapH(ix, iz);
+                setH(ix, iz, cur + (avg - cur) * f * k);
                 changed = true;
             }
         }
     } else if (bp.type == BrushParams::Noise) {
-        std::mt19937 rng((unsigned)std::hash<long long>{}((long long)worldPos.x * 1000.0 + worldPos.z));
+        // Seed from the quantized world position (rounding both coordinates
+        // BEFORE combining them, so nearby positions in the same cell share
+        // a seed instead of colliding due to the cast binding tighter than
+        // the multiplication).
+        long long sxq = (long long)std::llround(worldPos.x * 1000.0);
+        long long szq = (long long)std::llround(worldPos.z * 1000.0);
+        std::mt19937 rng((unsigned)std::hash<long long>{}(sxq * 1000003LL + szq));
         std::uniform_real_distribution<float> dist(-1.0f, 1.0f);
         for (int iz = z0; iz <= z1; ++iz) {
             for (int ix = x0; ix <= x1; ++ix) {
@@ -226,7 +252,10 @@ bool Terrain::applyBrush(const BrushParams& bp, const glm::vec3& worldPos) {
                 switch (bp.type) {
                     case BrushParams::Raise:  nh = cur + f * bp.strength; break;
                     case BrushParams::Lower:  nh = cur - f * bp.strength; break;
-                    case BrushParams::Flatten: nh = cur + (bp.target - cur) * f * bp.strength; break;
+                    // Flatten/Set are relaxation steps h' = h + k*(target-h);
+                    // k > 1 makes the iteration diverge (oscillation), so
+                    // clamp the blend factor.
+                    case BrushParams::Flatten: nh = cur + (bp.target - cur) * f * std::min(1.0f, bp.strength); break;
                     case BrushParams::Set:     nh = cur + (bp.target - cur) * f * std::min(1.0f, bp.strength); break;
                     default: break;
                 }
@@ -245,7 +274,6 @@ bool Terrain::applyBrush(const BrushParams& bp, const glm::vec3& worldPos) {
         recomputeNormals(nx0, nz0, nx1, nz1);
         uploadVertices(false);
         updateStats();
-        dirty_ = false;
     }
     return changed;
 }
@@ -384,9 +412,15 @@ void Terrain::generateHills() {
 void Terrain::generateNoise(const Noise::Params& p) {
     int perm[512];
     Noise::buildPerm(p.seed, perm);
+    // Params::frequency is documented as "cycles across the terrain", but
+    // the samplers multiply raw world coordinates — normalise it here so
+    // frequency=1 really means one period over the whole terrain (sampling
+    // world units directly aliases badly at the default density).
+    Noise::Params np = p;
+    np.frequency = p.frequency / worldSize_;
     for (int iz = 0; iz < gridZ_; ++iz) {
         for (int ix = 0; ix < gridX_; ++ix) {
-            float n = Noise::sample2DWithPerm(p, worldX(ix), worldZ(iz), perm);
+            float n = Noise::sample2DWithPerm(np, worldX(ix), worldZ(iz), perm);
             float& h = heights_[idx(ix, iz)];
             switch (p.blend) {
                 case Noise::Replace:  h = n; break;
@@ -437,7 +471,13 @@ bool Terrain::raycast(const glm::vec3& rayOrigin, const glm::vec3& rayDir,
     glm::vec3 d = glm::normalize(rayDir);
     const float tStep = 0.5f;
     const float tMax = 1500.0f;
+    const float halfW = worldSize_ * 0.5f;
 
+    auto inBounds = [&](const glm::vec3& p) {
+        // Slight tolerance so the outermost row of vertices is clickable.
+        return p.x >= -halfW - 0.01f && p.x <= halfW + 0.01f &&
+               p.z >= -halfW - 0.01f && p.z <= halfW + 0.01f;
+    };
     auto diffAt = [&](float t) {
         glm::vec3 p = rayOrigin + d * t;
         return p.y - heightAtWorld(p.x, p.z);
@@ -451,13 +491,22 @@ bool Terrain::raycast(const glm::vec3& rayOrigin, const glm::vec3& rayDir,
         if ((prevDiff > 0.0f) != (curDiff > 0.0f)) {
             // Bisection between t - tStep and t.
             float lo = t - tStep, hi = t;
+            float loDiff = prevDiff;
             for (int i = 0; i < 20; ++i) {
                 float mid = 0.5f * (lo + hi);
-                if ((diffAt(lo) > 0.0f) == (diffAt(mid) > 0.0f)) lo = mid;
+                float midDiff = diffAt(mid);
+                if ((loDiff > 0.0f) == (midDiff > 0.0f)) { lo = mid; loDiff = midDiff; }
                 else hi = mid;
             }
-            outPoint = rayOrigin + d * (0.5f * (lo + hi));
-            return true;
+            glm::vec3 hit = rayOrigin + d * (0.5f * (lo + hi));
+            // heightAtWorld() returns 0 outside the grid, which creates a
+            // phantom "ground plane" around the terrain. A crossing that
+            // lands out of bounds is not a real hit — keep marching (the ray
+            // may still re-enter and strike the terrain edge-on).
+            if (inBounds(hit)) {
+                outPoint = hit;
+                return true;
+            }
         }
         prevDiff = curDiff;
     }
@@ -632,8 +681,8 @@ void Terrain::resetSplat() {
 
 bool Terrain::loadLayerAlbedo(int layerIndex, const std::string& path) {
     if (layerIndex < 0 || layerIndex >= (int)layers_.size()) return false;
-    int w = 0, h = 0, ch = 0;
-    stbi_uc* pixels = stbi_load(path.c_str(), &w, &h, &ch, 4);
+    int w = 0, h = 0;
+    stbi_uc* pixels = loadImageRgba(path, w, h);
     if (!pixels) {
         std::cerr << "Terrain: failed to load texture: " << path << "\n";
         return false;
@@ -648,8 +697,8 @@ bool Terrain::loadLayerAlbedo(int layerIndex, const std::string& path) {
 
 bool Terrain::loadLayerNormal(int layerIndex, const std::string& path) {
     if (layerIndex < 0 || layerIndex >= (int)layers_.size()) return false;
-    int w = 0, h = 0, ch = 0;
-    stbi_uc* pixels = stbi_load(path.c_str(), &w, &h, &ch, 4);
+    int w = 0, h = 0;
+    stbi_uc* pixels = loadImageRgba(path, w, h);
     if (!pixels) {
         std::cerr << "Terrain: failed to load texture: " << path << "\n";
         return false;
@@ -670,8 +719,8 @@ void Terrain::setLayerTileSize(int layerIndex, float tileSize) {
 
 int Terrain::addLayer(const std::string& albedoPath) {
     if ((int)layers_.size() >= MAX_LAYERS) return -1;
-    int w = 0, h = 0, ch = 0;
-    stbi_uc* pixels = stbi_load(albedoPath.c_str(), &w, &h, &ch, 4);
+    int w = 0, h = 0;
+    stbi_uc* pixels = loadImageRgba(albedoPath, w, h);
     if (!pixels) {
         std::cerr << "Terrain: failed to load texture: " << albedoPath << "\n";
         return -1;
@@ -695,6 +744,38 @@ void Terrain::removeLayer(int layerIndex) {
     if (layers_[layerIndex].normal) glDeleteTextures(1, &layers_[layerIndex].normal);
     layers_.erase(layers_.begin() + layerIndex);
     rebuildArrays();
+
+    // Splat channels encode ABSOLUTE layer indices (channel = layer), so
+    // removing a layer shifts every layer above it down by one. Remap all
+    // weights accordingly and renormalise, otherwise painted areas would
+    // silently switch to the wrong textures.
+    const size_t texels = (size_t)gridX_ * gridZ_;
+    for (size_t t = 0; t < texels; ++t) {
+        float w[MAX_LAYERS];
+        for (int m = 0; m < NUM_SPLAT_MAPS; ++m) {
+            const uint8_t* px = &splat_[(size_t)m * texels * 4 + t * 4];
+            for (int c = 0; c < 4; ++c) w[m * 4 + c] = px[c] / 255.0f;
+        }
+        float out[MAX_LAYERS] = {};
+        float sum = 0.0f;
+        for (int L = 0; L < MAX_LAYERS; ++L) {
+            if (L == layerIndex) continue;                    // dropped layer
+            int nl = (L > layerIndex) ? L - 1 : L;            // shifted index
+            out[nl] += w[L];
+        }
+        for (int L = 0; L < MAX_LAYERS; ++L) sum += out[L];
+        if (sum > 1e-6f) {
+            for (int L = 0; L < MAX_LAYERS; ++L) out[L] /= sum;
+        } else {
+            out[0] = 1.0f;   // everything was the removed layer -> layer 0
+        }
+        for (int m = 0; m < NUM_SPLAT_MAPS; ++m) {
+            uint8_t* px = &splat_[(size_t)m * texels * 4 + t * 4];
+            for (int c = 0; c < 4; ++c)
+                px[c] = (uint8_t)std::clamp(out[m * 4 + c] * 255.0f + 0.5f, 0.0f, 255.0f);
+        }
+    }
+    uploadSplat();
 }
 
 void Terrain::bindTextures(const Shader& shader) const {

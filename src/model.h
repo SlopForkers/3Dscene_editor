@@ -4,6 +4,7 @@
 #include <glm/gtc/matrix_transform.hpp>
 #include <glm/gtc/type_ptr.hpp>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 // A glTF 2.0 model (also covers VRM, which is glTF + extensions). Loaded as a
@@ -21,7 +22,7 @@ public:
     void destroy();
 
     // Render the whole model. The caller's shader must already be in use and
-    // have uViewProj, uModel, uLightDir, uCamPos, uJointMatrices[128] etc. set
+    // have uViewProj, uModel, uLightDir, uCamPos, uJointMatrices[256] etc. set
     // (except per-primitive material uniforms, which this sets per primitive).
     void render(const class Shader& shader) const;
 
@@ -49,14 +50,14 @@ private:
         GLuint vboJoints = 0, vboWeights = 0;
         GLuint ebo = 0;
         int    indexCount = 0;
-        GLenum indexType = GL_UNSIGNED_SHORT;
+        GLenum indexType = GL_UNSIGNED_INT;   // EBO is always uploaded 32-bit
         int    materialIndex = -1;     // index into materials_
         bool   hasJoints = false;
         bool   hasTangent = false;
         bool   hasUv = false;
-        // the node this primitive belongs to (for global transform)
-        int    nodeIndex = -1;
-        int    skinIndex = -1;
+        // Local-space bounds (before any node transform).
+        glm::vec3 aabbMin = glm::vec3(0.0f);
+        glm::vec3 aabbMax = glm::vec3(0.0f);
     };
 
     struct Material {
@@ -108,6 +109,8 @@ private:
     std::vector<Mesh>      meshes_;
     std::vector<int>       rootNodes_;
     std::vector<GLuint>    textures_;     // GL texture ids for cleanup
+    // Per-load de-dup cache: cgltf_image* -> GL texture. Cleared on load.
+    std::unordered_map<const void*, GLuint> texCache_;
 
     glm::vec3 aabbMin_ = glm::vec3(0.0f);
     glm::vec3 aabbMax_ = glm::vec3(0.0f);
@@ -123,4 +126,13 @@ private:
     void   computeSkinMatrices();
     void   applyMaterial(const Material& m, const class Shader& shader,
                          const glm::vec3& lightDir, const glm::vec3& camPos) const;
+    void   applyDefaultMaterial(const class Shader& shader) const;
+    // Draw one primitive in the context of a scene node (supplies the global
+    // transform and the skin). Called once per (node, mesh) pair so meshes
+    // instanced by multiple nodes render at every placement. When
+    // instanceCount > 0 the primitive is drawn instanced using the mat4
+    // array in instanceVbo (attribute locations 6..9, divisor 1).
+    void   renderPrimitive(const class Shader& shader, const Primitive& P,
+                           const Node& node, GLuint instanceVbo = 0,
+                           int instanceCount = 0) const;
 };

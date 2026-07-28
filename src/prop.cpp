@@ -46,9 +46,11 @@ int PropManager::addProp(std::shared_ptr<Model> model, const glm::vec3& worldPos
     p.displayName = name.empty() ? "Prop " + std::to_string(p.id) : name;
 
     // Auto-scale so the largest AABB dimension matches targetSize.
+    // targetSize <= 0 means "keep native scale" (used by the scene loader,
+    // which restores the saved scale right after).
     glm::vec3 sz = model->aabbSize();
     float maxDim = std::max({sz.x, sz.y, sz.z});
-    if (maxDim > 1e-4f) {
+    if (maxDim > 1e-4f && targetSize > 0.0f) {
         p.scale = glm::vec3(targetSize / maxDim);
     }
 

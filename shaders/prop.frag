@@ -52,9 +52,10 @@ void main() {
     float met = clamp(uMetallic, 0.0, 1.0);
     float rough = clamp(uRoughness, 0.045, 1.0);
     if (uHasMetalRoughTex) {
+        // glTF spec: texture values MULTIPLY the scalar factors.
         vec4 mr = texture(uMetalRoughTex, vUv);
-        met = clamp(mr.b, 0.0, 1.0);
-        rough = clamp(mr.g, 0.045, 1.0);
+        met = clamp(uMetallic * mr.b, 0.0, 1.0);
+        rough = clamp(uRoughness * mr.g, 0.045, 1.0);
     }
 
     vec3 L = normalize(uLightDir);

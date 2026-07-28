@@ -21,4 +21,5 @@ private:
     GLuint vao_ = 0, vbo_ = 0;
     int   count_ = 0;
     float radius_ = 1.0f;
+    int   segments_ = 0;
 };

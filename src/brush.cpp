@@ -22,7 +22,11 @@ void BrushCursor::destroy() {
 }
 
 void BrushCursor::setShape(float radius, int segments) {
+    // No-op when nothing changed — callers invoke this every frame from the
+    // UI panels and re-uploading identical geometry each frame is waste.
+    if (radius == radius_ && segments == segments_ && count_ > 0) return;
     radius_ = radius;
+    segments_ = segments;
     // Geometry: [center, ring[0..segments-1], ring[0]].
     // Vertex 0 = center (for TRIANGLE_FAN); vertices 1..end = ring (for LINE_STRIP).
     std::vector<glm::vec3> verts;

@@ -1,12 +1,12 @@
 #include "app.h"
 #include "model.h"
 #include "file_dialog.h"
+#include "sys_util.h"
 #include <glm/glm.hpp>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
-#include <fstream>
 #include <iostream>
 #include <sstream>
 #include <string>
@@ -195,10 +195,13 @@ struct Writer {
             case Value::Number: {
                 char buf[64];
                 double n = v.num;
-                if (n == (double)(long long)n && std::abs(n) < 1e15)
+                if (!std::isfinite(n)) {
+                    w('0');   // JSON has no nan/inf — serialize as 0
+                } else if (n == (double)(long long)n && std::abs(n) < 1e15)
                     std::snprintf(buf, sizeof(buf), "%lld", (long long)n);
                 else
-                    std::snprintf(buf, sizeof(buf), "%.6g", n);
+                    // 9 significant digits round-trip a float exactly.
+                    std::snprintf(buf, sizeof(buf), "%.9g", n);
                 w(buf);
                 break;
             }
@@ -409,57 +412,78 @@ bool App::saveScene(const std::string& path) {
 
     std::string jsonStr = json::dump(root);
 
-    // --- Write single binary file: magic + version + JSON + heights + splat ---
-    std::ofstream f(path, std::ios::binary);
-    if (!f) { std::cerr << "Cannot write scene: " << path << "\n"; return false; }
+    // --- Assemble single binary file: magic + version + JSON + heights + splat ---
+    // Built in memory first so a mid-write failure can't leave a truncated
+    // file half-flushed by the stream.
+    std::vector<char> file;
+    auto appendRaw = [&](const void* data, size_t size) {
+        const char* p = reinterpret_cast<const char*>(data);
+        file.insert(file.end(), p, p + size);
+    };
+    auto appendU32 = [&](uint32_t v) { appendRaw(&v, sizeof(v)); };
 
     // Magic + version.
     const char magic[4] = {'S','C','N','E'};
-    f.write(magic, 4);
-    uint32_t version = 2;
-    f.write(reinterpret_cast<const char*>(&version), sizeof(version));
+    appendRaw(magic, 4);
+    appendU32(2);
 
     // JSON: size prefix + data.
-    uint32_t jsonSize = (uint32_t)jsonStr.size();
-    f.write(reinterpret_cast<const char*>(&jsonSize), sizeof(jsonSize));
-    f.write(jsonStr.data(), jsonSize);
+    appendU32((uint32_t)jsonStr.size());
+    appendRaw(jsonStr.data(), jsonStr.size());
 
     // Heights: size prefix + float data.
     const auto& heights = terrain_.heightsData();
-    uint32_t heightsBytes = (uint32_t)(heights.size() * sizeof(float));
-    f.write(reinterpret_cast<const char*>(&heightsBytes), sizeof(heightsBytes));
-    f.write(reinterpret_cast<const char*>(heights.data()), heightsBytes);
+    appendU32((uint32_t)(heights.size() * sizeof(float)));
+    appendRaw(heights.data(), heights.size() * sizeof(float));
 
     // Splat: size prefix + byte data.
     const auto& splat = terrain_.splatData();
-    uint32_t splatBytes = (uint32_t)splat.size();
-    f.write(reinterpret_cast<const char*>(&splatBytes), sizeof(splatBytes));
-    f.write(reinterpret_cast<const char*>(splat.data()), splatBytes);
+    appendU32((uint32_t)splat.size());
+    appendRaw(splat.data(), splat.size());
 
-    f.flush();
-    f.close();
+    // UTF-8 aware write (Windows paths with non-ASCII characters work).
+    if (!writeFileBytes(path, file.data(), file.size())) {
+        std::cerr << "Cannot write scene: " << path << "\n";
+        return false;
+    }
 
     std::cerr << "[SAVE] " << path << "  blocks=" << build_.count() << "\n";
     return true;
 }
 
 bool App::loadScene(const std::string& path) {
-    // Read entire file into memory.
-    std::ifstream f(path, std::ios::binary);
-    if (!f) { std::cerr << "Cannot open scene: " << path << "\n"; return false; }
-    std::vector<char> buf((std::istreambuf_iterator<char>(f)),
-                          std::istreambuf_iterator<char>());
-    f.close();
+    // Read entire file into memory (UTF-8 aware: works with non-ASCII paths).
+    std::vector<char> buf;
+    if (!readFileBytes(path, buf)) {
+        std::cerr << "Cannot open scene: " << path << "\n";
+        return false;
+    }
     if (buf.size() < 16) { std::cerr << "Scene file too small\n"; return false; }
 
-    // Parse header: magic + version.
+    // Bounds-checked cursor over the buffer. Every length field comes from
+    // the file and must be validated before use — a truncated or hostile
+    // .scene must not read past the buffer.
     size_t off = 0;
+    auto readU32 = [&](uint32_t& v) -> bool {
+        if (buf.size() - off < sizeof(v)) return false;
+        std::memcpy(&v, buf.data() + off, sizeof(v));
+        off += sizeof(v);
+        return true;
+    };
+    auto readBlob = [&](uint32_t bytes, const char*& ptr) -> bool {
+        if ((size_t)bytes > buf.size() - off) return false;   // also catches underflow
+        ptr = buf.data() + off;
+        off += bytes;
+        return true;
+    };
+
+    // Parse header: magic + version.
     if (std::memcmp(buf.data(), "SCNE", 4) != 0) {
         std::cerr << "Scene file: bad magic\n"; return false;
     }
     off += 4;
     uint32_t version;
-    std::memcpy(&version, buf.data() + off, sizeof(version)); off += 4;
+    if (!readU32(version)) { std::cerr << "Scene file truncated\n"; return false; }
     if (version != 1 && version != 2) {
         std::cerr << "Unsupported scene version: " << version << "\n";
         return false;
@@ -467,34 +491,43 @@ bool App::loadScene(const std::string& path) {
 
     // JSON: size prefix + data.
     uint32_t jsonSize;
-    std::memcpy(&jsonSize, buf.data() + off, sizeof(jsonSize)); off += 4;
-    std::string jsonStr(buf.data() + off, jsonSize);
-    off += jsonSize;
+    const char* jsonPtr = nullptr;
+    if (!readU32(jsonSize) || !readBlob(jsonSize, jsonPtr)) {
+        std::cerr << "Scene file truncated (JSON)\n"; return false;
+    }
+    std::string jsonStr(jsonPtr, jsonSize);
 
     json::Value root = json::parse(jsonStr);
     if (!root.isObj()) { std::cerr << "Invalid scene JSON\n"; return false; }
 
     // Heights: size prefix + float data.
     uint32_t heightsBytes;
-    std::memcpy(&heightsBytes, buf.data() + off, sizeof(heightsBytes)); off += 4;
-    const char* heightsPtr = buf.data() + off;
-    off += heightsBytes;
+    const char* heightsPtr = nullptr;
+    if (!readU32(heightsBytes) || !readBlob(heightsBytes, heightsPtr)) {
+        std::cerr << "Scene file truncated (heights)\n"; return false;
+    }
 
     // Splat: size prefix + byte data.
     uint32_t splatBytes;
-    std::memcpy(&splatBytes, buf.data() + off, sizeof(splatBytes)); off += 4;
-    const char* splatPtr = buf.data() + off;
+    const char* splatPtr = nullptr;
+    if (!readU32(splatBytes) || !readBlob(splatBytes, splatPtr)) {
+        std::cerr << "Scene file truncated (splat)\n"; return false;
+    }
 
     std::string baseDir = baseDirOf(path);
 
     // --- Apply terrain ---
     const json::Value& t = root["terrain"];
     if (t.isObj()) {
-        int gx = (int)t["gridX"].asNum(terrain_.gridX());
-        int gz = (int)t["gridZ"].asNum(terrain_.gridZ());
+        // Sanity-clamp grid dims before they are used in size math so a
+        // hostile file can't overflow int in gx*gz.
+        int gx = std::clamp((int)t["gridX"].asNum(terrain_.gridX()), 1, 4096);
+        int gz = std::clamp((int)t["gridZ"].asNum(terrain_.gridZ()), 1, 4096);
 
-        // Load heights from embedded binary blob.
-        if (heightsBytes == (uint32_t)(gx * gz * sizeof(float)) &&
+        // Load heights from embedded binary blob. If the grid dims don't
+        // match the current terrain the heightfield is left as-is (a warning
+        // is better than silently mixing a new scene with the old terrain).
+        if (heightsBytes == (uint32_t)((size_t)gx * gz * sizeof(float)) &&
             gx == terrain_.gridX() && gz == terrain_.gridZ()) {
             std::vector<float> heights((size_t)gx * gz);
             std::memcpy(heights.data(), heightsPtr, heightsBytes);
@@ -505,11 +538,11 @@ bool App::loadScene(const std::string& path) {
         // multi-splat (4 RGBA maps = 16 channels, gx*gz*16 bytes). Version 1
         // used a single RGBA map (gx*gz*4); migrate it into map 0 of the new
         // 16-channel planar layout and leave maps 1-3 zero.
-        if (splatBytes == (uint32_t)(gx * gz * 16)) {
+        if (splatBytes == (uint32_t)((size_t)gx * gz * 16)) {
             std::vector<uint8_t> splat((size_t)splatBytes);
             std::memcpy(splat.data(), splatPtr, splatBytes);
             terrain_.setSplat(splat);
-        } else if (splatBytes == (uint32_t)(gx * gz * 4)) {
+        } else if (splatBytes == (uint32_t)((size_t)gx * gz * 4)) {
             std::vector<uint8_t> splat16((size_t)gx * gz * 16, 0);
             // Old interleaved-per-texel 4 bytes -> map 0 planar block.
             size_t map0 = 0;
@@ -574,11 +607,14 @@ bool App::loadScene(const std::string& path) {
         camera_.setDistance((float)cam["distance"].asNum(60.0));
     }
 
-    // --- Clear existing props + details + blocks ---
+    // --- Clear existing props + details + blocks + model library ---
+    // (The library must be cleared too: it owns GL buffers of every imported
+    // model, so keeping it across loads leaks GPU memory on every load.)
     props_.clear();
     details_.clearInstances();
     details_.clearPrototypes();
     build_.clear();
+    modelLibrary_.clear();
     selectedBlockId_ = -1;
     selectedBlockFace_ = -1;
 
@@ -670,11 +706,14 @@ bool App::loadScene(const std::string& path) {
             BuildSystem::BlockType type = (BuildSystem::BlockType)(int)bk["type"].asNum(BuildSystem::Wall);
             float yaw = (float)bk["yaw"].asNum(0.0);
             int id = build_.placeBlock(center, size, type, color, yaw);
-            // Restore per-block face texture (indices match the loaded library).
+            // Restore per-block face texture. Validate against the LOADED
+            // library size — if a texture file was missing its entry is
+            // skipped and saved indices no longer line up; drop those refs.
             int ti = (int)bk["ti"].asNum(-1.0);
             int tf = (int)bk["tf"].asNum(-1.0);
             float ts = (float)bk["ts"].asNum(1.0);
             int tm = (int)bk["tm"].asNum(0.0);
+            if (ti >= build_.blockTextureCount()) ti = -1;
             if (ti >= 0 && tf >= 0 && id >= 0) {
                 build_.setBlockFaceTexture(id, ti, tf);
                 build_.setBlockTexScale(id, ts);
