@@ -89,6 +89,7 @@ void main() {
         float bias = max(0.005 * (1.0 - NdotL), 0.0005);
         ivec2 ts = textureSize(uShadowMap, 0);
         vec2 inv = 1.0 / vec2(ts);
+        shadow = 0.0;
         for (int x = -1; x <= 1; ++x)
             for (int y = -1; y <= 1; ++y)
                 shadow += texture(uShadowMap, vec3(proj.xy + vec2(x, y) * inv, proj.z - bias));

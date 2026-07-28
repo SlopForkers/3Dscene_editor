@@ -30,11 +30,11 @@ bool readFileBytes(const std::string& utf8Path, std::vector<char>& out) {
     std::ifstream f(p, std::ios::binary | std::ios::ate);
     if (!f) return false;
     auto size = f.tellg();
-    if (size <= 0) return false;
+    if (size < 0) return false;
     f.seekg(0, std::ios::beg);
     out.resize((size_t)size);
-    f.read(out.data(), size);
-    return f.good() && (size_t)f.gcount() == (size_t)size;
+    if (size > 0) f.read(out.data(), size);
+    return !f.fail() && (size_t)f.gcount() == (size_t)size;
 }
 
 bool writeFileBytes(const std::string& utf8Path, const void* data, size_t size) {

@@ -143,6 +143,9 @@ private:
 
     // Shadow map.
     static constexpr int kShadowSize = 2048;
+    // Unit 7: terrain owns 0-5, prop materials 0-4, block texture 0 — must
+    // not collide with per-material bindings.
+    static constexpr int kShadowTexUnit = 7;
     GLuint  shadowFbo_  = 0;
     GlTexture shadowMap_;
 

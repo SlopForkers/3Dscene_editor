@@ -122,6 +122,9 @@ bool App::initOpenGL() {
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_BORDER);
     float borderColor[] = { 1.0f, 1.0f, 1.0f, 1.0f };
     glTexParameterfv(GL_TEXTURE_2D, GL_TEXTURE_BORDER_COLOR, borderColor);
+    // sampler2DShadow requires compare mode, otherwise texture() is UB.
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_COMPARE_MODE, GL_COMPARE_REF_TO_TEXTURE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_COMPARE_FUNC, GL_LEQUAL);
     glBindTexture(GL_TEXTURE_2D, 0);
 
     glGenFramebuffers(1, &shadowFbo_);
@@ -398,6 +401,10 @@ void App::handleInput(float dt) {
     if (!typing && g_input.keyPressed(GLFW_KEY_TAB)) {
         bool wasVertex = (toolMode_ == ToolVertex);
         activeTool_->cancelDrag();
+        // Sub-gizmos own their drag state and poll g_input only while their
+        // tool is active — cancel explicitly or a stale drag applies later.
+        gizmo_.cancelDrag();
+        vertexEditor_.cancelDrag();
         toolMode_ = (toolMode_ == ToolPaint)  ? ToolProp   :
                     (toolMode_ == ToolProp)   ? ToolVertex :
                     (toolMode_ == ToolVertex) ? ToolBuild : ToolPaint;
@@ -460,36 +467,45 @@ static glm::vec3 strengthColor(float strength) {
 void App::renderDepthPass(const glm::mat4& lvp) {
     glColorMask(GL_FALSE, GL_FALSE, GL_FALSE, GL_FALSE);
 
+    // Front-face culling reduces peter-panning. Model::render/applyMaterial
+    // toggle GL_CULL_FACE internally, so re-assert it before every subsystem.
+    auto assertFrontCull = [] {
+        glEnable(GL_CULL_FACE);
+        glCullFace(GL_FRONT);
+    };
+
     terrainShader_.use();
     terrainShader_.setInt("uEnableShadow", 0);
     terrainShader_.setMat4("uViewProj", lvp);
+    terrainShader_.setMat4("uModel", glm::mat4(1.0f));
+    assertFrontCull();
     terrain_.draw();
 
     if (props_.count() > 0) {
         propShader_.use();
         propShader_.setInt("uEnableShadow", 0);
-        propShader_.setMat4("uViewProj", lvp);
-        for (const auto& p : props_.props()) {
-            if (!p.model || !p.model->valid()) continue;
-            propShader_.setMat4("uInstance", p.worldMatrix());
-            p.model->render(propShader_);
-        }
+        assertFrontCull();
+        props_.render(propShader_, lvp, glm::vec3(0.0f), glm::vec3(0.0f));
     }
 
     if (details_.instanceCount() > 0) {
         propShader_.use();
         propShader_.setInt("uEnableShadow", 0);
+        assertFrontCull();
         details_.render(propShader_, lvp, glm::vec3(0.0f), glm::vec3(0.0f));
     }
 
     if (build_.count() > 0) {
         blockShader_.use();
         blockShader_.setInt("uEnableShadow", 0);
-        blockShader_.setMat4("uViewProj", lvp);
+        assertFrontCull();
         build_.render(blockShader_, lvp, glm::vec3(0.0f), glm::vec3(0.0f));
     }
 
     glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+    // App default: culling OFF (skybox cube is drawn from inside).
+    glDisable(GL_CULL_FACE);
+    glCullFace(GL_BACK);
 }
 
 void App::renderScene() {
@@ -500,27 +516,33 @@ void App::renderScene() {
     glm::mat4 proj = camera_.projection();
     glm::mat4 vp = proj * view;
 
-    // --- Shadow pass ---
+    // --- Shadow pass (skipped entirely when shadows are off) ---
     glm::vec3 lightDir = lightDirFromAngles(lightAzimuth_, lightElevation_);
-    glm::vec3 center = camera_.target();
-    float radius = terrain_.worldSize() * 0.7f;
-    glm::vec3 lightPos = center - lightDir * radius;
-    glm::mat4 lightView = glm::lookAt(lightPos, center, glm::vec3(0.0f, 1.0f, 0.0f));
-    glm::mat4 lightProj = glm::ortho(-radius, radius, -radius, radius, 0.1f, radius * 2.0f);
-    glm::mat4 lvp = lightProj * lightView;
+    glm::mat4 lvp(1.0f);
+    if (showShadows_) {
+        glm::vec3 center = camera_.target();
+        // 0.75 covers the terrain corners (half-diagonal = 0.707 * size).
+        float radius = terrain_.worldSize() * 0.75f;
+        glm::vec3 lightPos = center - lightDir * radius;
+        glm::mat4 lightView = glm::lookAt(lightPos, center, glm::vec3(0.0f, 1.0f, 0.0f));
+        glm::mat4 lightProj = glm::ortho(-radius, radius, -radius, radius, 0.1f, radius * 2.0f);
+        lvp = lightProj * lightView;
 
-    glViewport(0, 0, kShadowSize, kShadowSize);
-    glBindFramebuffer(GL_FRAMEBUFFER, shadowFbo_);
-    glClear(GL_DEPTH_BUFFER_BIT);
-    glCullFace(GL_FRONT); // peter-panning mitigation
-    renderDepthPass(lvp);
-    glCullFace(GL_BACK);
-    glBindFramebuffer(GL_FRAMEBUFFER, 0);
-    glViewport(0, 0, fbWidth_, fbHeight_);
+        // Unbind the shadow map before it becomes the depth attachment —
+        // sampling a texture while rendering into it is a feedback loop.
+        glActiveTexture(GL_TEXTURE0 + kShadowTexUnit);
+        glBindTexture(GL_TEXTURE_2D, 0);
 
-    // Shadow map for all lit shaders (unit 4, after terrain's 0-5).
-    glActiveTexture(GL_TEXTURE4);
-    glBindTexture(GL_TEXTURE_2D, shadowMap_);
+        glViewport(0, 0, kShadowSize, kShadowSize);
+        glBindFramebuffer(GL_FRAMEBUFFER, shadowFbo_);
+        glClear(GL_DEPTH_BUFFER_BIT);
+        renderDepthPass(lvp);
+        glBindFramebuffer(GL_FRAMEBUFFER, 0);
+        glViewport(0, 0, fbWidth_, fbHeight_);
+
+        glActiveTexture(GL_TEXTURE0 + kShadowTexUnit);
+        glBindTexture(GL_TEXTURE_2D, shadowMap_);
+    }
     int enableShadow = showShadows_ ? 1 : 0;
 
     // --- Main pass ---
@@ -537,7 +559,7 @@ void App::renderScene() {
     terrainShader_.setVec3("uCamPos", camera_.position());
     terrainShader_.setFloat("uMaxHeight", terrain_.maxHeight());
     terrainShader_.setMat4("uLightViewProj", lvp);
-    terrainShader_.setInt("uShadowMap", 4);
+    terrainShader_.setInt("uShadowMap", kShadowTexUnit);
     terrainShader_.setInt("uEnableShadow", enableShadow);
     terrain_.bindTextures(terrainShader_);
     terrain_.draw();
@@ -545,21 +567,21 @@ void App::renderScene() {
     if (props_.count() > 0) {
         propShader_.use();
         propShader_.setMat4("uLightViewProj", lvp);
-        propShader_.setInt("uShadowMap", 4);
+        propShader_.setInt("uShadowMap", kShadowTexUnit);
         propShader_.setInt("uEnableShadow", 1);
         props_.render(propShader_, vp, lightDir, camera_.position());
     }
     if (details_.instanceCount() > 0) {
         propShader_.use();
         propShader_.setMat4("uLightViewProj", lvp);
-        propShader_.setInt("uShadowMap", 4);
+        propShader_.setInt("uShadowMap", kShadowTexUnit);
         propShader_.setInt("uEnableShadow", 1);
         details_.render(propShader_, vp, lightDir, camera_.position());
     }
     if (build_.count() > 0) {
         blockShader_.use();
         blockShader_.setMat4("uLightViewProj", lvp);
-        blockShader_.setInt("uShadowMap", 4);
+        blockShader_.setInt("uShadowMap", kShadowTexUnit);
         blockShader_.setInt("uEnableShadow", 1);
         build_.render(blockShader_, vp, lightDir, camera_.position());
     }

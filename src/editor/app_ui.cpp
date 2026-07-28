@@ -84,6 +84,8 @@ void App::selectCategory(int cat) {
     if (cat < 0 || cat >= CatCount) return;
     if (activeCategory_ == CatVertex && cat != CatVertex) wireframe_ = false;
     activeTool_->cancelDrag();
+    gizmo_.cancelDrag();
+    vertexEditor_.cancelDrag();
     activeCategory_ = cat;
     if (cat == CatBrush) {
         toolMode_ = ToolPaint; activeTool_ = &terrainTool_;
