@@ -66,6 +66,7 @@ public:
     bool showGrid_ = true;
     bool showCursor_ = true;
     bool showHelp_ = true;
+    bool showShadows_ = true;
     float cursorColor_[3] = {1.0f, 0.85f, 0.2f};
     float propTargetSize_ = 6.0f;
 
@@ -121,6 +122,7 @@ private:
 
     void handleInput(float dt);
     void renderScene();
+    void renderDepthPass(const glm::mat4& lvp);
     void renderImGui();
     void drawLeftPanel();
     void drawBrushBar();
@@ -138,6 +140,11 @@ private:
     GlBuffer      boxVbo_;
     GlVertexArray dragVao_;
     GlBuffer      dragVbo_;
+
+    // Shadow map.
+    static constexpr int kShadowSize = 2048;
+    GLuint  shadowFbo_  = 0;
+    GlTexture shadowMap_;
 
     bool imguiInitialized_ = false;
 

@@ -17,6 +17,10 @@ uniform sampler2D uSplat2; uniform sampler2D uSplat3;
 uniform float uTileSize[16];
 uniform int   uLayerCount;
 
+uniform mat4 uLightViewProj;
+uniform sampler2DShadow uShadowMap;
+uniform int uEnableShadow;
+
 out vec4 FragColor;
 
 // Weight of layer i (0..15): which splat map (i/4) and channel (i%4).
@@ -87,7 +91,22 @@ void main() {
     float snow = smoothstep(0.80, 1.0, t);
     albedo = mix(albedo, vec3(0.90, 0.92, 0.95), snow * 0.85);
 
-    vec3 color = albedo * (ambient + diff * 0.9);
+    // PCF shadows.
+    float shadow = 1.0;
+    if (uEnableShadow == 1) {
+        vec4 lightClip = uLightViewProj * vec4(vWorldPos, 1.0);
+        vec3 proj = lightClip.xyz / lightClip.w;
+        proj = proj * 0.5 + 0.5;
+        float bias = max(0.005 * (1.0 - diff), 0.0005);
+        ivec2 ts = textureSize(uShadowMap, 0);
+        vec2 inv = 1.0 / vec2(ts);
+        shadow = 0.0;
+        for (int x = -1; x <= 1; ++x)
+            for (int y = -1; y <= 1; ++y)
+                shadow += texture(uShadowMap, vec3(proj.xy + vec2(x, y) * inv, proj.z - bias));
+        shadow /= 9.0;
+    }
+    vec3 color = albedo * (ambient + diff * 0.9 * shadow);
 
     // Subtle rim.
     vec3 V = normalize(uCamPos - vWorldPos);

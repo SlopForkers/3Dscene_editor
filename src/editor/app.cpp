@@ -103,13 +103,33 @@ bool App::initOpenGL() {
         return false;
     }
     if (!blockShader_.loadFromFile(shaderDir_ + "/block.vert",
-                                     shaderDir_ + "/block.frag")) {
+                                      shaderDir_ + "/block.frag")) {
         return false;
     }
 
     glEnable(GL_DEPTH_TEST);
     glEnable(GL_MULTISAMPLE);
     glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
+
+    // Shadow map: depth-only framebuffer, 2048x2048.
+    shadowMap_.create();
+    glBindTexture(GL_TEXTURE_2D, shadowMap_);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_DEPTH_COMPONENT24,
+                 kShadowSize, kShadowSize, 0, GL_DEPTH_COMPONENT, GL_FLOAT, nullptr);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_BORDER);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_BORDER);
+    float borderColor[] = { 1.0f, 1.0f, 1.0f, 1.0f };
+    glTexParameterfv(GL_TEXTURE_2D, GL_TEXTURE_BORDER_COLOR, borderColor);
+    glBindTexture(GL_TEXTURE_2D, 0);
+
+    glGenFramebuffers(1, &shadowFbo_);
+    glBindFramebuffer(GL_FRAMEBUFFER, shadowFbo_);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_TEXTURE_2D, shadowMap_, 0);
+    glDrawBuffer(GL_NONE);
+    glReadBuffer(GL_NONE);
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
 
     terrain_.create();
     terrain_.generateHills();
@@ -211,6 +231,8 @@ void App::shutdown() {
         boxVbo_.destroy();
         dragVao_.destroy();
         dragVbo_.destroy();
+        if (shadowFbo_) { glDeleteFramebuffers(1, &shadowFbo_); shadowFbo_ = 0; }
+        shadowMap_.destroy();
         noiseTex_.destroy();
         props_.clear();
         modelLibrary_.clear();
@@ -435,6 +457,41 @@ static glm::vec3 strengthColor(float strength) {
                      0.0f);
 }
 
+void App::renderDepthPass(const glm::mat4& lvp) {
+    glColorMask(GL_FALSE, GL_FALSE, GL_FALSE, GL_FALSE);
+
+    terrainShader_.use();
+    terrainShader_.setInt("uEnableShadow", 0);
+    terrainShader_.setMat4("uViewProj", lvp);
+    terrain_.draw();
+
+    if (props_.count() > 0) {
+        propShader_.use();
+        propShader_.setInt("uEnableShadow", 0);
+        propShader_.setMat4("uViewProj", lvp);
+        for (const auto& p : props_.props()) {
+            if (!p.model || !p.model->valid()) continue;
+            propShader_.setMat4("uInstance", p.worldMatrix());
+            p.model->render(propShader_);
+        }
+    }
+
+    if (details_.instanceCount() > 0) {
+        propShader_.use();
+        propShader_.setInt("uEnableShadow", 0);
+        details_.render(propShader_, lvp, glm::vec3(0.0f), glm::vec3(0.0f));
+    }
+
+    if (build_.count() > 0) {
+        blockShader_.use();
+        blockShader_.setInt("uEnableShadow", 0);
+        blockShader_.setMat4("uViewProj", lvp);
+        build_.render(blockShader_, lvp, glm::vec3(0.0f), glm::vec3(0.0f));
+    }
+
+    glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+}
+
 void App::renderScene() {
     if (wireframe_) glPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
     else            glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
@@ -443,8 +500,31 @@ void App::renderScene() {
     glm::mat4 proj = camera_.projection();
     glm::mat4 vp = proj * view;
 
-    // Skybox first: strip translation from the view so the cube stays centred
-    // on the camera; the vertex shader pins depth at the far plane.
+    // --- Shadow pass ---
+    glm::vec3 lightDir = lightDirFromAngles(lightAzimuth_, lightElevation_);
+    glm::vec3 center = camera_.target();
+    float radius = terrain_.worldSize() * 0.7f;
+    glm::vec3 lightPos = center - lightDir * radius;
+    glm::mat4 lightView = glm::lookAt(lightPos, center, glm::vec3(0.0f, 1.0f, 0.0f));
+    glm::mat4 lightProj = glm::ortho(-radius, radius, -radius, radius, 0.1f, radius * 2.0f);
+    glm::mat4 lvp = lightProj * lightView;
+
+    glViewport(0, 0, kShadowSize, kShadowSize);
+    glBindFramebuffer(GL_FRAMEBUFFER, shadowFbo_);
+    glClear(GL_DEPTH_BUFFER_BIT);
+    glCullFace(GL_FRONT); // peter-panning mitigation
+    renderDepthPass(lvp);
+    glCullFace(GL_BACK);
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    glViewport(0, 0, fbWidth_, fbHeight_);
+
+    // Shadow map for all lit shaders (unit 4, after terrain's 0-5).
+    glActiveTexture(GL_TEXTURE4);
+    glBindTexture(GL_TEXTURE_2D, shadowMap_);
+    int enableShadow = showShadows_ ? 1 : 0;
+
+    // --- Main pass ---
+    // Skybox first.
     glm::mat4 skyVp = proj * glm::mat4(glm::mat3(view));
     glDepthFunc(GL_LEQUAL);
     skybox_.draw(skyboxShader_, skyVp, skyExposure_);
@@ -453,26 +533,34 @@ void App::renderScene() {
     terrainShader_.use();
     terrainShader_.setMat4("uViewProj", vp);
     terrainShader_.setMat4("uModel", glm::mat4(1.0f));
-    glm::vec3 lightDir = lightDirFromAngles(lightAzimuth_, lightElevation_);
     terrainShader_.setVec3("uLightDir", lightDir);
     terrainShader_.setVec3("uCamPos", camera_.position());
     terrainShader_.setFloat("uMaxHeight", terrain_.maxHeight());
+    terrainShader_.setMat4("uLightViewProj", lvp);
+    terrainShader_.setInt("uShadowMap", 4);
+    terrainShader_.setInt("uEnableShadow", enableShadow);
     terrain_.bindTextures(terrainShader_);
-
     terrain_.draw();
 
-    // Props (after terrain, before cursor overlay). Props use their own shader.
     if (props_.count() > 0) {
         propShader_.use();
+        propShader_.setMat4("uLightViewProj", lvp);
+        propShader_.setInt("uShadowMap", 4);
+        propShader_.setInt("uEnableShadow", 1);
         props_.render(propShader_, vp, lightDir, camera_.position());
     }
-    // Instanced details (vegetation/rocks/etc.), painted with the Vegetation brush.
     if (details_.instanceCount() > 0) {
         propShader_.use();
+        propShader_.setMat4("uLightViewProj", lvp);
+        propShader_.setInt("uShadowMap", 4);
+        propShader_.setInt("uEnableShadow", 1);
         details_.render(propShader_, vp, lightDir, camera_.position());
     }
-    // Build blocks (solid cubes).
     if (build_.count() > 0) {
+        blockShader_.use();
+        blockShader_.setMat4("uLightViewProj", lvp);
+        blockShader_.setInt("uShadowMap", 4);
+        blockShader_.setInt("uEnableShadow", 1);
         build_.render(blockShader_, vp, lightDir, camera_.position());
     }
     // Ghost preview for the next block (build tool only).
@@ -480,6 +568,8 @@ void App::renderScene() {
         // Walls have yaw=0 — size encodes orientation. Foundation has no yaw.
         float ghostYaw = 0.0f;
         // Semi-transparent fill.
+        blockShader_.use();
+        blockShader_.setInt("uEnableShadow", 0);
         build_.renderGhost(blockShader_, vp, lightDir, camera_.position(),
                            ghostCenter_, ghostSize_, build_.color(), ghostYaw);
         // Wireframe outline on top.

@@ -14,6 +14,10 @@ uniform int          uTexMode;      // 0 = Stretch (one copy), 1 = Tile (repeat)
 uniform sampler2D   uTex;
 uniform float        uTexScale;     // repeats per face (Tile mode only)
 
+uniform mat4 uLightViewProj;
+uniform sampler2DShadow uShadowMap;
+uniform int uEnableShadow;
+
 out vec4 FragColor;
 
 // Map a normal to a face index (matches BuildSystem::Face).
@@ -51,6 +55,22 @@ void main() {
     }
 
     vec3 color = baseColor * ambient + baseColor * NdotL * 0.8;
+
+    float shadow = 1.0;
+    if (uEnableShadow == 1) {
+        vec4 lightClip = uLightViewProj * vec4(vWorldPos, 1.0);
+        vec3 proj = lightClip.xyz / lightClip.w;
+        proj = proj * 0.5 + 0.5;
+        float bias = max(0.005 * (1.0 - NdotL), 0.0005);
+        ivec2 ts = textureSize(uShadowMap, 0);
+        vec2 inv = 1.0 / vec2(ts);
+        shadow = 0.0;
+        for (int x = -1; x <= 1; ++x)
+            for (int y = -1; y <= 1; ++y)
+                shadow += texture(uShadowMap, vec3(proj.xy + vec2(x, y) * inv, proj.z - bias));
+        shadow /= 9.0;
+    }
+    color = baseColor * ambient + baseColor * NdotL * 0.8 * shadow;
 
     float dist = length(uCamPos - vWorldPos);
     float fog = clamp((dist - 120.0) / 600.0, 0.0, 0.7);

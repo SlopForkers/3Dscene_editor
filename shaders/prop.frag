@@ -25,6 +25,10 @@ uniform bool uHasNormalTex;     uniform sampler2D uNormalTex;
 uniform bool uHasEmissiveTex;   uniform sampler2D uEmissiveTex;
 uniform bool uHasOcclusionTex;  uniform sampler2D uOcclusionTex;
 
+uniform mat4 uLightViewProj;
+uniform sampler2DShadow uShadowMap;
+uniform int uEnableShadow;
+
 out vec4 FragColor;
 
 const float PI = 3.14159265359;
@@ -76,6 +80,22 @@ void main() {
     vec3 specular = F * specPow * NdotL;
 
     vec3 color = albedo * ambient + (diffuse + specular) * 1.4;
+
+    float shadow = 1.0;
+    if (uEnableShadow == 1) {
+        vec4 lightClip = uLightViewProj * vec4(vWorldPos, 1.0);
+        vec3 proj = lightClip.xyz / lightClip.w;
+        proj = proj * 0.5 + 0.5;
+        float bias = max(0.005 * (1.0 - NdotL), 0.0005);
+        ivec2 ts = textureSize(uShadowMap, 0);
+        vec2 inv = 1.0 / vec2(ts);
+        for (int x = -1; x <= 1; ++x)
+            for (int y = -1; y <= 1; ++y)
+                shadow += texture(uShadowMap, vec3(proj.xy + vec2(x, y) * inv, proj.z - bias));
+        shadow /= 9.0;
+    }
+    // Shadow the directional light terms only; ambient stays unshadowed.
+    color = albedo * ambient + (diffuse + specular) * 1.4 * shadow;
 
     if (uHasOcclusionTex) {
         float ao = texture(uOcclusionTex, vUv).r;

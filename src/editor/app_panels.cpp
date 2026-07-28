@@ -752,6 +752,7 @@ void App::drawViewContent() {
     ImGui::TextDisabled("View");
     ImGui::Separator();
     ImGui::Checkbox("Wireframe", &wireframe_);
+    ImGui::Checkbox("Shadows", &showShadows_);
     ImGui::Checkbox("Show cursor", &showCursor_);
     ImGui::Checkbox("Show help (H)", &showHelp_);
     ImGui::ColorEdit3("Cursor color", cursorColor_);
