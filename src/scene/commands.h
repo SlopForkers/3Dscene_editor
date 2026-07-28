@@ -5,6 +5,7 @@
 #include "detail.h"
 #include "terrain.h"
 #include "scene_camera.h"
+#include "spawn.h"
 #include <glm/glm.hpp>
 #include <array>
 #include <string>
@@ -329,6 +330,127 @@ private:
     CameraRig* rig_;
     int id_;
     SceneCamera before_, after_;
+};
+
+// Spawn marker added / removed. Stores the whole marker (including its logic
+// graph) so ids and nodes survive undo/redo cycles.
+class SpawnCommand : public Command {
+public:
+    SpawnCommand(SpawnManager& sm, const SpawnPoint& sp, bool addedByUser,
+                 const char* name)
+        : spawns_(&sm), spawn_(sp), added_(addedByUser), name_(name) {}
+
+    void redo() override {
+        if (added_) spawns_->addSpawnWithId(spawn_);
+        else spawns_->removeSpawn(spawn_.id);
+    }
+    void undo() override {
+        if (added_) spawns_->removeSpawn(spawn_.id);
+        else spawns_->addSpawnWithId(spawn_);
+    }
+    size_t memoryBytes() const override {
+        return sizeof(*this) + spawn_.name.size() + spawn_.tag.size() +
+               spawn_.modelPath.size() +
+               spawn_.nodes.size() * sizeof(LogicNode);
+    }
+    const char* name() const override { return name_; }
+
+private:
+    SpawnManager* spawns_;
+    SpawnPoint spawn_;
+    bool added_;
+    const char* name_;
+};
+
+// Spawn marker field edit (name/tag/pose/model/animation — NOT the graph).
+// Merges consecutive edits of the same marker.
+class SpawnEditCommand : public Command {
+public:
+    struct Fields {
+        std::string name, tag, modelPath, defaultAnim;
+        glm::vec3 position = glm::vec3(0.0f);
+        float yaw = 0.0f, scale = 1.0f;
+    };
+
+    SpawnEditCommand(SpawnManager& sm, int id,
+                     const Fields& before, const Fields& after)
+        : spawns_(&sm), id_(id), before_(before), after_(after) {}
+
+    static Fields capture(const SpawnPoint& sp) {
+        Fields f;
+        f.name = sp.name; f.tag = sp.tag;
+        f.modelPath = sp.modelPath; f.defaultAnim = sp.defaultAnim;
+        f.position = sp.position; f.yaw = sp.yaw; f.scale = sp.scale;
+        return f;
+    }
+
+    void redo() override { apply(after_); }
+    void undo() override { apply(before_); }
+    bool merge(const Command& next) override;
+    size_t memoryBytes() const override {
+        return sizeof(*this) + before_.name.size() + after_.name.size() +
+               before_.modelPath.size() + after_.modelPath.size();
+    }
+    const char* name() const override { return "Edit Spawn"; }
+
+private:
+    void apply(const Fields& f) {
+        SpawnPoint* sp = spawns_->findSpawn(id_);
+        if (!sp) return;
+        sp->name = f.name; sp->tag = f.tag;
+        sp->modelPath = f.modelPath; sp->defaultAnim = f.defaultAnim;
+        sp->position = f.position; sp->yaw = f.yaw; sp->scale = f.scale;
+    }
+
+    SpawnManager* spawns_;
+    int id_;
+    Fields before_, after_;
+};
+
+// Logic-graph edit (structure or node params). Snapshot-based: graphs are
+// small, so whole-graph before/after copies are cheap and bulletproof.
+// mergeable edits (param widgets) coalesce; structural ops never merge.
+class SpawnGraphCommand : public Command {
+public:
+    struct State {
+        std::vector<LogicNode> nodes;
+        int rootId = -1;
+        int nextNodeId = 0;
+    };
+
+    SpawnGraphCommand(SpawnManager& sm, int spawnId,
+                      State before, State after,
+                      const char* name, bool mergeable)
+        : spawns_(&sm), id_(spawnId), before_(std::move(before)),
+          after_(std::move(after)), name_(name), mergeable_(mergeable) {}
+
+    static State capture(const SpawnPoint& sp) {
+        return State{ sp.nodes, sp.rootId, sp.nextNodeId };
+    }
+
+    void redo() override { apply(after_); }
+    void undo() override { apply(before_); }
+    bool merge(const Command& next) override;
+    size_t memoryBytes() const override {
+        return sizeof(*this) +
+               (before_.nodes.size() + after_.nodes.size()) * sizeof(LogicNode);
+    }
+    const char* name() const override { return name_; }
+
+private:
+    void apply(const State& s) {
+        SpawnPoint* sp = spawns_->findSpawn(id_);
+        if (!sp) return;
+        sp->nodes = s.nodes;
+        sp->rootId = s.rootId;
+        sp->nextNodeId = s.nextNodeId;
+    }
+
+    SpawnManager* spawns_;
+    int id_;
+    State before_, after_;
+    const char* name_;
+    bool mergeable_;
 };
 
 // Splat reset (clear to layer 0).

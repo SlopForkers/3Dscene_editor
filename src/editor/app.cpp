@@ -355,6 +355,8 @@ void App::undoEdit() {
         props_.select(-1);
     if (selectedCameraId_ >= 0 && !cameraRig_.findCamera(selectedCameraId_))
         selectedCameraId_ = -1;
+    if (selectedSpawnId_ >= 0 && !spawns_.findSpawn(selectedSpawnId_))
+        selectedSpawnId_ = -1;
     markCamPreviewsStale();
 }
 
@@ -366,6 +368,8 @@ void App::redoEdit() {
         props_.select(-1);
     if (selectedCameraId_ >= 0 && !cameraRig_.findCamera(selectedCameraId_))
         selectedCameraId_ = -1;
+    if (selectedSpawnId_ >= 0 && !spawns_.findSpawn(selectedSpawnId_))
+        selectedSpawnId_ = -1;
     markCamPreviewsStale();
 }
 
@@ -461,7 +465,8 @@ void App::handleInput(float dt) {
         toolMode_ = (toolMode_ == ToolPaint)  ? ToolProp   :
                     (toolMode_ == ToolProp)   ? ToolVertex :
                     (toolMode_ == ToolVertex) ? ToolBuild  :
-                    (toolMode_ == ToolBuild)  ? ToolCamera : ToolPaint;
+                    (toolMode_ == ToolBuild)  ? ToolCamera :
+                    (toolMode_ == ToolCamera) ? ToolSpawn : ToolPaint;
         if (wasVertex && toolMode_ != ToolVertex) wireframe_ = false;
         if (toolMode_ == ToolPaint) {
             activeTool_ = &terrainTool_; activeCategory_ = CatBrush;
@@ -472,6 +477,9 @@ void App::handleInput(float dt) {
         } else if (toolMode_ == ToolCamera) {
             activeTool_ = &cameraTool_; activeCategory_ = CatCameras;
             showCameras_ = true;
+        } else if (toolMode_ == ToolSpawn) {
+            activeTool_ = &spawnTool_; activeCategory_ = CatSpawns;
+            showSpawns_ = true;
         } else { // ToolBuild
             activeTool_ = &buildTool_; activeCategory_ = CatBuild;
         }
@@ -866,6 +874,7 @@ void App::renderScene() {
     }
 
     drawCameraFrustums(vp);
+    drawSpawnMarkers(vp);
     glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
 }
 
@@ -989,6 +998,96 @@ void App::addCameraFromView() {
     // The first camera becomes the game's initial camera by default.
     if (cameraRig_.cameras().size() == 1) cameraRig_.setActive(id);
     markCamPreviewsStale();
+}
+
+// ---------------------------------------------------------------------------
+// Spawn markers: viz, picking, placement, graph-edit undo helper.
+
+void App::drawSpawnMarkers(const glm::mat4& vp) {
+    if (spawns_.spawns().empty()) return;
+
+    lineShader_.use();
+    lineShader_.setMat4("uViewProj", vp);
+    lineShader_.setFloat("uAlpha", 1.0f);
+    glDisable(GL_DEPTH_TEST);
+    glBindVertexArray(dragVao_);
+    glBindBuffer(GL_ARRAY_BUFFER, dragVbo_);
+
+    for (const auto& s : spawns_.spawns()) {
+        const glm::vec3& P = s.position;
+        float sc = s.scale;
+        float h  = 1.7f * sc;                     // stylised person height
+        float hy = h + 0.14f * sc;                // head square height
+        float hw = 0.13f * sc;                    // head half size
+        glm::vec3 dir(std::sin(s.yaw), 0.0f, std::cos(s.yaw));
+        glm::vec3 side(dir.z, 0.0f, -dir.x);
+        glm::vec3 chest(P.x, P.y + h * 0.55f, P.z);
+        glm::vec3 tip = chest + dir * (0.8f * sc);
+        glm::vec3 barb = tip - dir * (0.22f * sc);
+        glm::vec3 b1 = barb + side * (0.14f * sc);
+        glm::vec3 b2 = barb - side * (0.14f * sc);
+        // body, head square, facing arrow with two barbs = 8 lines.
+        float pts[16][3] = {
+            {P.x, P.y, P.z}, {P.x, P.y + h, P.z},
+            {P.x - hw, hy, P.z - hw}, {P.x + hw, hy, P.z - hw},
+            {P.x + hw, hy, P.z - hw}, {P.x + hw, hy, P.z + hw},
+            {P.x + hw, hy, P.z + hw}, {P.x - hw, hy, P.z + hw},
+            {P.x - hw, hy, P.z + hw}, {P.x - hw, hy, P.z - hw},
+            {chest.x, chest.y, chest.z}, {tip.x, tip.y, tip.z},
+            {tip.x, tip.y, tip.z}, {b1.x, b1.y, b1.z},
+            {tip.x, tip.y, tip.z}, {b2.x, b2.y, b2.z},
+        };
+        glm::vec3 col(0.3f, 0.85f, 0.9f);                  // teal
+        if (s.id == selectedSpawnId_) col = glm::vec3(1.0f, 0.9f, 0.2f);
+        lineShader_.setVec3("uColor", col);
+        glBufferData(GL_ARRAY_BUFFER, sizeof(pts), pts, GL_DYNAMIC_DRAW);
+        glDrawArrays(GL_LINES, 0, 16);
+    }
+
+    glBindVertexArray(0);
+    glEnable(GL_DEPTH_TEST);
+}
+
+int App::pickSpawn(const glm::vec3& ro, const glm::vec3& rd) const {
+    int bestId = -1;
+    float bestT = FLT_MAX;
+    for (const auto& s : spawns_.spawns()) {
+        float r = std::max(0.9f, 1.1f * s.scale);
+        float t = 0.0f;
+        if (rayPointDist2(ro, rd, s.position, t) < r * r && t < bestT) {
+            bestT = t; bestId = s.id;
+        }
+        glm::vec3 head = s.position + glm::vec3(0.0f, 1.84f * s.scale, 0.0f);
+        if (rayPointDist2(ro, rd, head, t) < r * r && t < bestT) {
+            bestT = t; bestId = s.id;
+        }
+    }
+    return bestId;
+}
+
+void App::addSpawnAt(const glm::vec3& worldPos) {
+    SpawnPoint sp;
+    sp.name = "Spawn " + std::to_string(spawns_.spawns().size() + 1);
+    sp.position = worldPos;
+    // Face the editor camera by default (yaw convention: (sin, 0, cos)).
+    glm::vec3 toCam = camera_.position() - worldPos;
+    sp.yaw = std::atan2(toCam.x, toCam.z);
+    int id = spawns_.addSpawn(sp);
+    // Fetch AFTER addSpawn: the vector push_back may have reallocated.
+    const SpawnPoint* added = spawns_.findSpawn(id);
+    if (!added) return;
+    history_.push(std::make_unique<SpawnCommand>(
+        spawns_, *added, true, "Add Spawn"));
+    selectedSpawnId_ = id;
+}
+
+void App::pushSpawnGraphEdit(int spawnId, const char* name, bool mergeable,
+                             const SpawnGraphCommand::State& before) {
+    SpawnPoint* sp = spawns_.findSpawn(spawnId);
+    if (!sp) return;
+    history_.push(std::make_unique<SpawnGraphCommand>(
+        spawns_, spawnId, before, SpawnGraphCommand::capture(*sp),
+        name, mergeable));
 }
 
 // Jump the editor orbit camera to a scene camera's pose. The orbit camera is

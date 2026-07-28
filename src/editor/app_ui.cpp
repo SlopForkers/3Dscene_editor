@@ -61,6 +61,8 @@ void App::renderImGui() {
     drawFileWindow();
     drawCamerasWindow();
     drawCameraViewWindow();
+    drawSpawnsWindow();
+    drawSpawnLogicWindow();
     if (showHelp_) drawHelpOverlay();
 
     // Brush value overlay: show radius/strength over the viewport image while
@@ -135,9 +137,10 @@ void App::buildDefaultLayout(unsigned int dockspaceId) {
     ImGui::DockBuilderDockWindow("Tools", dockTools);
     ImGui::DockBuilderDockWindow("Hierarchy", dockHierarchy);
     ImGui::DockBuilderDockWindow("Inspector", dockRight);
-    // Camera View shares the centre node with the Viewport; docking it first
-    // keeps the Viewport the visible tab.
+    // Camera View / Spawn Logic share the centre node with the Viewport;
+    // docking them first keeps the Viewport the visible tab.
     ImGui::DockBuilderDockWindow("Camera View", remaining);
+    ImGui::DockBuilderDockWindow("Spawn Logic", remaining);
     ImGui::DockBuilderDockWindow("Viewport", remaining);
     // Hidden-by-default windows get sensible homes for when they are shown.
     ImGui::DockBuilderDockWindow("Terrain", dockTools);
@@ -146,6 +149,7 @@ void App::buildDefaultLayout(unsigned int dockspaceId) {
     ImGui::DockBuilderDockWindow("Skybox/Settings", dockRight);
     ImGui::DockBuilderDockWindow("History", dockRight);
     ImGui::DockBuilderDockWindow("Cameras", dockHierarchy);
+    ImGui::DockBuilderDockWindow("Spawns", dockHierarchy);
     ImGui::DockBuilderFinish(id);
 }
 
@@ -243,7 +247,7 @@ void App::drawToolbarWindow() {
 
     // --- Tools ---
     const int toolCats[] = { CatBrush, CatVertex, CatProps, CatVegetation,
-                             CatBuild, CatCameras };
+                             CatBuild, CatCameras, CatSpawns };
     for (int cat : toolCats) {
         if (iconCell(icons::catIcon(cat), icons::catName(cat), activeCategory_ == cat))
             selectCategory(cat);
@@ -295,6 +299,7 @@ void App::drawToolsWindow() {
             case CatVegetation: drawVegetationContent(); break;
             case CatBuild:      drawBuildContent();      break;
             case CatCameras:    drawCameraToolContent(); break;
+            case CatSpawns:     drawSpawnToolContent();  break;
             default:            drawBrushContent();      break;
         }
     }
@@ -360,6 +365,28 @@ void App::drawHierarchyWindow() {
                 if (ImGui::IsItemHovered() &&
                     ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left))
                     activateSceneCamera(c.id);
+                ImGui::PopID();
+            }
+        }
+
+        // --- Spawn markers ---
+        char spwHdr[48];
+        std::snprintf(spwHdr, sizeof(spwHdr), "Spawns (%d)",
+                      (int)spawns_.spawns().size());
+        if (ImGui::CollapsingHeader(spwHdr)) {
+            if (spawns_.spawns().empty())
+                ImGui::TextDisabled("(none — Spawns tool)");
+            for (const auto& s : spawns_.spawns()) {
+                ImGui::PushID(("spw" + std::to_string(s.id)).c_str());
+                if (ImGui::Selectable(s.name.c_str(),
+                                      s.id == selectedSpawnId_,
+                                      ImGuiSelectableFlags_AllowDoubleClick)) {
+                    selectedSpawnId_ = s.id;
+                    showSpawns_ = true;
+                }
+                if (ImGui::IsItemHovered() &&
+                    ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left))
+                    showSpawnLogic_ = true;
                 ImGui::PopID();
             }
         }
@@ -446,6 +473,20 @@ void App::drawCameraViewWindow() {
     ImGui::End();
 }
 
+void App::drawSpawnsWindow() {
+    if (!showSpawns_) return;
+    if (ImGui::Begin("Spawns", &showSpawns_))
+        drawSpawnsContent();
+    ImGui::End();
+}
+
+void App::drawSpawnLogicWindow() {
+    if (!showSpawnLogic_) return;
+    if (ImGui::Begin("Spawn Logic", &showSpawnLogic_))
+        drawSpawnLogicContent();
+    ImGui::End();
+}
+
 // --------------------------------------------------------------------------
 
 void App::selectCategory(int cat) {
@@ -470,6 +511,9 @@ void App::selectCategory(int cat) {
         // also (re)opens the camera parameters window.
         toolMode_ = ToolCamera; activeTool_ = &cameraTool_;
         showCameras_ = true;
+    } else if (cat == CatSpawns) {
+        toolMode_ = ToolSpawn; activeTool_ = &spawnTool_;
+        showSpawns_ = true;
     }
 }
 
@@ -532,6 +576,13 @@ void App::drawHelpOverlay() {
         ImGui::BulletText("Left-click empty: deselect");
         ImGui::BulletText("[ / ]: cycle cameras");
         ImGui::BulletText("Parameters: Cameras window");
+    } else if (toolMode_ == ToolSpawn) {
+        ImGui::Separator();
+        ImGui::TextUnformatted("Spawn tool:");
+        ImGui::BulletText("Left-click marker: select");
+        ImGui::BulletText("Drag marker: move over terrain");
+        ImGui::BulletText("Ctrl+click: place new marker");
+        ImGui::BulletText("Logic graph: Spawns window -> Edit Logic");
     } else {
         ImGui::Separator();
         ImGui::TextUnformatted("Vertex tool (wireframe):");
@@ -564,6 +615,11 @@ void App::drawHelpOverlay() {
         ImGui::Text("Cameras: %d   Selected: %s",
                     (int)cameraRig_.cameras().size(),
                     sc ? sc->name.c_str() : "none");
+    } else if (toolMode_ == ToolSpawn) {
+        const SpawnPoint* sp = spawns_.findSpawn(selectedSpawnId_);
+        ImGui::Text("Spawns: %d   Selected: %s",
+                    (int)spawns_.spawns().size(),
+                    sp ? sp->name.c_str() : "none");
     } else {
         const char* dm = vertexEditor_.dragMode() == VertexEditor::FreeXYZ  ? "Free XYZ" :
                          vertexEditor_.dragMode() == VertexEditor::Vertical ? "Vertical" : "Normal";

@@ -11,11 +11,12 @@
 //   8       u32       JSON metadata size in bytes
 //   12      N         JSON metadata: terrain grid dims + texture layers,
 //                     skybox path + exposure, light angles, editor camera,
-//                     scene cameras (id/name/tag/pose/fov + active id), props,
-//                     vegetation prototypes + instances, block texture
-//                     library + blocks. Asset paths are stored relative to
-//                     the scene file when possible. Unknown JSON keys are
-//                     ignored by older loaders.
+//                     scene cameras (id/name/tag/pose/fov + active id),
+//                     spawn markers (pose/model + condition/action node
+//                     graph), props, vegetation prototypes + instances,
+//                     block texture library + blocks. Asset paths are stored
+//                     relative to the scene file when possible. Unknown JSON
+//                     keys are ignored by older loaders.
 //   12+N    u32       heightfield blob size (gridX * gridZ * sizeof(float))
 //   ...     blob      heights, row-major floats
 //   ...     u32       splat blob size (gridX * gridZ * 16 for v2,

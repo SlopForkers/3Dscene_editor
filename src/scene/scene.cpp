@@ -10,6 +10,7 @@ bool App::saveScene(const std::string& path) {
         props_,
         details_,
         build_,
+        spawns_,
         modelLibrary_,
         skyboxConvertShader_,
         skyExposure_,
@@ -30,6 +31,7 @@ bool App::loadScene(const std::string& path) {
         props_,
         details_,
         build_,
+        spawns_,
         modelLibrary_,
         skyboxConvertShader_,
         skyExposure_,
@@ -44,6 +46,7 @@ bool App::loadScene(const std::string& path) {
     if (ok) {
         history_.clear();
         selectedCameraId_ = -1;
+        selectedSpawnId_ = -1;
         markCamPreviewsStale();
     }
     return ok;

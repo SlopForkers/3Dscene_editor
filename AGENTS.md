@@ -54,6 +54,7 @@ src/
  │   ├─ detail.cpp/h ............. instanced vegetation
  │   ├─ build.cpp/h .............. snap-based blocks + face textures
  │   ├─ scene_camera.cpp/h ....... SceneCamera (id/name/tag/pose/fov) + CameraRig
+ │   ├─ spawn.cpp/h .............. spawn markers + condition/action logic graph
  │   ├─ skybox.cpp/h ............. cubemap sky + equirect→cubemap
  │   ├─ gizmo.cpp/h .............. translate/rotate/scale manipulator
  │   ├─ scene.cpp/h .............. App::saveScene/loadScene wrappers (format: scene.h)
@@ -159,6 +160,15 @@ lives in.
   wins), empty click deselects. The frustum visualisation geometry
   (`cameraFrustumCorners`, fixed 6m depth, 16:9) is shared by drawing and
   picking — keep them in sync.
+- **Spawn logic graph**: each `SpawnPoint` owns Root → Condition (true/false
+  pins) → Action (chained) nodes (`spawn.h`); the game evaluates them. Undo
+  for graph edits is snapshot-based (`SpawnGraphCommand`; structural ops
+  never merge, param widgets do). The node editor is a hand-rolled ImDrawList
+  canvas in `app_panels.cpp` (`nodeEdCanvas`/`nodeEdParamsPanel`) — cycle
+  check before linking via `spawnGraphReachable`; node ids follow the same
+  never-reuse rule as other subsystems. `LogicNode::Kind` constants are
+  `Cond`/`Act` (un-suffixed names would shadow the `Condition`/`Action`
+  structs inside the struct scope).
 - **Drag state**: captured at mouse-press (e.g. `buildDragErase_`), never
   re-read modifiers at release. Tool switches (Tab/category click) must
   cancel in-progress drags (`Gizmo::cancelDrag`, `VertexEditor::cancelDrag`,

@@ -12,9 +12,11 @@
 #include "detail.h"
 #include "build.h"
 #include "scene_camera.h"
+#include "spawn.h"
 #include "gl_resource.h"
 #include "tools.h"
 #include "history.h"
+#include "commands.h"
 #include <memory>
 #include <string>
 #include <vector>
@@ -35,11 +37,12 @@ public:
         CatHistory,
         CatFile,
         CatCameras, CatCamView,
+        CatSpawns,
         CatCount
     };
 
     enum ToolMode { ToolPaint = 0, ToolProp = 1, ToolVertex = 2, ToolBuild = 3,
-                    ToolCamera = 4 };
+                    ToolCamera = 4, ToolSpawn = 5 };
 
     // Subsystems (public — tools and panels reference them directly).
     Camera camera_;
@@ -61,6 +64,8 @@ public:
     BuildSystem build_;
     CameraRig cameraRig_;
     int selectedCameraId_ = -1;
+    SpawnManager spawns_;
+    int selectedSpawnId_ = -1;
     History history_;
     std::vector<std::shared_ptr<Model>> modelLibrary_;
     Noise::Params noiseParams_;
@@ -112,6 +117,9 @@ public:
     void drawCamerasContent();
     void drawCameraViewContent();
     void drawCameraToolContent();
+    void drawSpawnsContent();
+    void drawSpawnToolContent();
+    void drawSpawnLogicContent();
 
     // Scene camera interaction: jump the editor orbit camera to a scene
     // camera's pose; cycle steps through the rig ([ / ] hotkeys).
@@ -123,6 +131,12 @@ public:
     // Viewport picking (camera tool): nearest camera whose position/target/
     // frustum corners are close to the ray; -1 when nothing is near.
     int pickSceneCamera(const glm::vec3& ro, const glm::vec3& rd) const;
+    // Spawn markers: add at a world position (tool/panel), ray-pick nearest.
+    void addSpawnAt(const glm::vec3& worldPos);
+    int pickSpawn(const glm::vec3& ro, const glm::vec3& rd) const;
+    // Logic-graph edit with undo: capture before, mutate, then push.
+    void pushSpawnGraphEdit(int spawnId, const char* name, bool mergeable,
+                            const SpawnGraphCommand::State& before);
 
     bool saveScene(const std::string& path);
     bool loadScene(const std::string& path);
@@ -137,6 +151,7 @@ public:
     VertexTool  vertexTool_;
     BuildTool   buildTool_;
     CameraTool  cameraTool_;
+    SpawnTool   spawnTool_;
     ITool*      activeTool_ = &terrainTool_;
 
     int  toolMode_        = ToolPaint;
@@ -154,6 +169,8 @@ public:
     bool showFile_      = false;
     bool showCameras_   = false;
     bool showCameraView_= false;
+    bool showSpawns_    = false;
+    bool showSpawnLogic_= false;
 
     // Scene cameras: frustum visualisation + preview window options.
     bool showCamFrustums_ = true;
@@ -182,6 +199,11 @@ public:
     int  camEditId_ = -1;
     SceneCamera camEditBefore_;
 
+    // Spawn panel field-edit capture (same pattern; graph has its own).
+    bool spawnEditActive_ = false;
+    int  spawnEditId_ = -1;
+    SpawnEditCommand::Fields spawnEditBefore_;
+
 private:
     bool initWindow();
     bool initOpenGL();
@@ -201,7 +223,23 @@ private:
     void renderImGui();
     void drawSelectionBox();
     void drawCameraFrustums(const glm::mat4& vp);
+    void drawSpawnMarkers(const glm::mat4& vp);
     void selectCategory(int cat);
+
+    // Spawn Logic node-editor window state (canvas is redrawn every frame).
+    glm::vec2 nodeEdScroll_ = glm::vec2(0.0f);
+    int  nodeEdSelectedNode_ = -1;    // node id inside the selected spawn
+    int  nodeEdLinkFrom_ = -1;        // link-drag source node id (-1 = none)
+    bool nodeEdLinkFalse_ = false;    // dragging from the false pin
+    int  nodeEdDragNode_ = -1;        // node being dragged (-1 = none)
+    glm::vec2 nodeEdDragOff_ = glm::vec2(0.0f);
+    bool nodeEdPanning_ = false;
+    int  nodeEdCtxNode_ = -1;         // node under the right-click (-1 = empty)
+    glm::vec2 nodeEdCtxPos_ = glm::vec2(0.0f);  // canvas pos of the right-click
+    bool nodeEdEditActive_ = false;   // param-widget undo capture in progress
+    SpawnGraphCommand::State nodeEdBefore_;
+    void nodeEdParamsPanel(SpawnPoint& sp);
+    void nodeEdCanvas(SpawnPoint& sp);
 
     // Camera preview window: small per-camera FBOs, rendered one camera per
     // frame (round-robin) — never all cameras in a single frame.
@@ -232,6 +270,8 @@ private:
     void drawFileWindow();
     void drawCamerasWindow();
     void drawCameraViewWindow();
+    void drawSpawnsWindow();
+    void drawSpawnLogicWindow();
     void buildDefaultLayout(unsigned int dockspaceId);
     void ensureViewportFbo();
 

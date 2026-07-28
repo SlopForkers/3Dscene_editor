@@ -61,6 +61,19 @@ struct CameraTool final : ITool {
     void drawPanelContent(App& app) override;
 };
 
+// Spawn tool: cursor mode — click picks a marker, dragging moves it over
+// the terrain, Ctrl+click places a new marker at the hit point.
+struct SpawnTool final : ITool {
+    bool handleInput(App& app, float dt, const ImGuiIO& io, bool overUI, bool typing) override;
+    void cancelDrag() override;
+    void drawPanelContent(App& app) override;
+
+private:
+    bool moving_ = false;   // marker move drag in progress
+    int  moveId_ = -1;
+    SpawnEditCommand::Fields moveBefore_;
+};
+
 struct BuildTool final : ITool {
     bool handleInput(App& app, float dt, const ImGuiIO& io, bool overUI, bool typing) override;
     void cancelDrag() override;

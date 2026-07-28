@@ -157,6 +157,27 @@ bool CameraEditCommand::merge(const Command& next) {
 }
 
 // ============================================================================
+// SpawnEditCommand / SpawnGraphCommand
+// ============================================================================
+
+bool SpawnEditCommand::merge(const Command& next) {
+    auto* n = dynamic_cast<const SpawnEditCommand*>(&next);
+    if (!n || n->id_ != id_) return false;
+    after_ = n->after_;
+    return true;
+}
+
+bool SpawnGraphCommand::merge(const Command& next) {
+    auto* n = dynamic_cast<const SpawnGraphCommand*>(&next);
+    if (!n || n->id_ != id_) return false;
+    // Only param-widget edits coalesce (both sides marked mergeable);
+    // structural ops must stay one-undo-per-op.
+    if (!mergeable_ || !n->mergeable_) return false;
+    after_ = n->after_;
+    return true;
+}
+
+// ============================================================================
 // BlockTextureCommand
 // ============================================================================
 

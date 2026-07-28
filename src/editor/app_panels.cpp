@@ -8,6 +8,7 @@
 #include "file_dialog.h"
 #include <imgui.h>
 #include <algorithm>
+#include <cmath>
 #include <cstdio>
 #include <filesystem>
 #include <iostream>
@@ -1079,6 +1080,158 @@ void App::drawCameraToolContent() {
     ImGui::TextWrapped("Edit name, tag, pose and FOV in the Cameras window.");
 }
 
+// --------------------------------------------------------------------------
+// Spawn markers.
+
+// Spawn TOOL controls (Tools window): add + hints. The marker list and field
+// editing live in the Spawns window (auto-opened by the tool).
+void App::drawSpawnToolContent() {
+    if (ImGui::Button("Add at camera target")) {
+        glm::vec3 t = camera_.target();
+        t.y = terrain_.heightAtWorld(t.x, t.z);
+        addSpawnAt(t);
+    }
+    ImGui::Separator();
+    ImGui::Text("Spawns: %d", (int)spawns_.spawns().size());
+    const SpawnPoint* sel = spawns_.findSpawn(selectedSpawnId_);
+    ImGui::Text("Selected: %s", sel ? sel->name.c_str() : "(none)");
+    ImGui::Separator();
+    ImGui::TextWrapped("Cursor mode: click a marker to select, drag to move "
+                       "it, Ctrl+click places a new marker. Fields edit in "
+                       "the Spawns window; the logic graph opens via "
+                       "Edit Logic.");
+}
+
+void App::drawSpawnsContent() {
+    ImGui::TextDisabled("Character spawn markers");
+    ImGui::Separator();
+
+    if (ImGui::Button("Add at camera target")) {
+        glm::vec3 t = camera_.target();
+        t.y = terrain_.heightAtWorld(t.x, t.z);
+        addSpawnAt(t);
+    }
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Or Ctrl+click on terrain in the spawn tool");
+
+    if (spawns_.spawns().empty()) {
+        ImGui::TextDisabled("(no markers yet)");
+        return;
+    }
+
+    for (const auto& s : spawns_.spawns()) {
+        ImGui::PushID(s.id);
+        char lbl[180];
+        std::snprintf(lbl, sizeof(lbl), "%s%s  (#%d)", s.name.c_str(),
+                      s.modelPath.empty() ? " [logic]" : "", s.id);
+        if (ImGui::Selectable(lbl, s.id == selectedSpawnId_,
+                              ImGuiSelectableFlags_AllowDoubleClick))
+            selectedSpawnId_ = s.id;
+        if (ImGui::IsItemHovered() &&
+            ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left))
+            showSpawnLogic_ = true;
+        ImGui::PopID();
+    }
+
+    SpawnPoint* sel = spawns_.findSpawn(selectedSpawnId_);
+    if (!sel) {
+        selectedSpawnId_ = -1;   // stale selection (undo / scene load)
+        return;
+    }
+    ImGui::Separator();
+
+    // Undo capture for widget edits (SpawnEditCommand::merge coalesces).
+    auto trackWidget = [&]() {
+        if (ImGui::IsItemActivated() && !spawnEditActive_) {
+            spawnEditActive_ = true;
+            spawnEditId_     = sel->id;
+            spawnEditBefore_ = SpawnEditCommand::capture(*sel);
+        }
+        if (ImGui::IsItemDeactivatedAfterEdit() && spawnEditActive_) {
+            SpawnPoint* p = spawns_.findSpawn(spawnEditId_);
+            if (p) {
+                SpawnEditCommand::Fields after = SpawnEditCommand::capture(*p);
+                if (after.name != spawnEditBefore_.name ||
+                    after.tag != spawnEditBefore_.tag ||
+                    after.modelPath != spawnEditBefore_.modelPath ||
+                    after.defaultAnim != spawnEditBefore_.defaultAnim ||
+                    after.position != spawnEditBefore_.position ||
+                    after.yaw != spawnEditBefore_.yaw ||
+                    after.scale != spawnEditBefore_.scale) {
+                    history_.push(std::make_unique<SpawnEditCommand>(
+                        spawns_, spawnEditId_, spawnEditBefore_, after));
+                }
+            }
+            spawnEditActive_ = false;
+        }
+    };
+
+    char nm[64];
+    std::snprintf(nm, sizeof(nm), "%s", sel->name.c_str());
+    if (ImGui::InputText("Name", nm, sizeof(nm))) sel->name = nm;
+    trackWidget();
+    char tg[64];
+    std::snprintf(tg, sizeof(tg), "%s", sel->tag.c_str());
+    if (ImGui::InputText("Tag", tg, sizeof(tg))) sel->tag = tg;
+    trackWidget();
+
+    ImGui::DragFloat3("Position", &sel->position[0], 0.1f);
+    trackWidget();
+    ImGui::SliderAngle("Yaw", &sel->yaw, -180.0f, 180.0f);
+    trackWidget();
+    ImGui::SliderFloat("Scale", &sel->scale, 0.1f, 5.0f, "%.2f");
+    trackWidget();
+
+    // Character model (optional): empty = pure logic spawn.
+    if (sel->modelPath.empty()) {
+        ImGui::TextDisabled("Model: (none — logic-only spawn)");
+    } else {
+        ImGui::TextWrapped("Model: %s",
+            std::filesystem::path(sel->modelPath).filename().string().c_str());
+    }
+    if (ImGui::Button("Load model...")) {
+        SpawnEditCommand::Fields before = SpawnEditCommand::capture(*sel);
+        std::string p = openFileDialog("glTF / VRM", "*.gltf;*.glb;*.vrm",
+                                       nativeWindow());
+        if (!p.empty()) {
+            sel->modelPath = p;
+            history_.push(std::make_unique<SpawnEditCommand>(
+                spawns_, sel->id, before, SpawnEditCommand::capture(*sel)));
+        }
+    }
+    if (!sel->modelPath.empty()) {
+        ImGui::SameLine();
+        if (ImGui::Button("Clear model")) {
+            SpawnEditCommand::Fields before = SpawnEditCommand::capture(*sel);
+            sel->modelPath.clear();
+            history_.push(std::make_unique<SpawnEditCommand>(
+                spawns_, sel->id, before, SpawnEditCommand::capture(*sel)));
+        }
+    }
+    char da[64];
+    std::snprintf(da, sizeof(da), "%s", sel->defaultAnim.c_str());
+    if (ImGui::InputText("Default anim", da, sizeof(da))) sel->defaultAnim = da;
+    trackWidget();
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Animation played at spawn (resolved by the game)");
+
+    if (ImGui::Button("Edit Logic...")) showSpawnLogic_ = true;
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Condition/action node graph (double-click a "
+                          "marker works too)");
+    ImGui::SameLine();
+    if (ImGui::Button("Delete")) {
+        SpawnPoint copy = *sel;   // copy BEFORE removeSpawn invalidates sel
+        int id = sel->id;
+        history_.push(std::make_unique<SpawnCommand>(
+            spawns_, copy, false, "Delete Spawn"));
+        spawns_.removeSpawn(id);
+        selectedSpawnId_ = -1;
+    }
+    ImGui::TextDisabled("Graph: %d node%s", (int)sel->nodes.size(),
+                        sel->nodes.size() == 1 ? "" : "s");
+}
+
 void App::drawCameraViewContent() {
     ImGui::Checkbox("Live previews", &camPreviewsLive_);
     ImGui::SameLine();
@@ -1143,5 +1296,521 @@ void App::drawCameraViewContent() {
         ImGui::PopID();
     }
     ImGui::EndTable();
+}
+
+// --------------------------------------------------------------------------
+// Spawn Logic: custom lightweight node editor (no dependencies).
+// Left column = selected node params, right = pannable canvas with nodes
+// and true/false link pins. All edits go through SpawnGraphCommand (undo).
+
+void App::drawSpawnLogicContent() {
+    SpawnPoint* sp = spawns_.findSpawn(selectedSpawnId_);
+    if (!sp) {
+        ImGui::TextDisabled("Select a spawn marker first (Spawns panel or "
+                            "the spawn tool).");
+        return;
+    }
+    // A different marker got selected: drop node-editor transient state.
+    static int s_lastSpawnId = -1;
+    if (s_lastSpawnId != sp->id) {
+        s_lastSpawnId = sp->id;
+        nodeEdSelectedNode_ = -1;
+        nodeEdLinkFrom_ = -1;
+        nodeEdDragNode_ = -1;
+        nodeEdScroll_ = glm::vec2(0.0f);
+    }
+
+    ImGui::Text("Logic: %s", sp->name.c_str());
+    ImGui::SameLine();
+    if (ImGui::Button("Template: If/Else animation")) {
+        SpawnGraphCommand::State before = SpawnGraphCommand::capture(*sp);
+        const LogicNode* root = sp->findNode(sp->rootId);
+        glm::vec2 base = root ? root->uiPos + glm::vec2(200.0f, 0.0f)
+                              : glm::vec2(220.0f, 120.0f);
+        int cid = sp->addNode(LogicNode::Cond, base);
+        int aT  = sp->addNode(LogicNode::Act, base + glm::vec2(220.0f, -55.0f));
+        int aF  = sp->addNode(LogicNode::Act, base + glm::vec2(220.0f, 55.0f));
+        // Fetch by id after every addNode (vector may reallocate).
+        if (LogicNode* c = sp->findNode(cid)) {
+            c->cond.type = Condition::FlagEquals;
+            c->cond.flagId = 1;
+            c->cond.value = 1;
+        }
+        if (LogicNode* a = sp->findNode(aT)) {
+            a->act.type = Action::SetAnimation;
+            a->act.param = "start_emotion_happy";
+        }
+        if (LogicNode* a = sp->findNode(aF)) {
+            a->act.type = Action::SetAnimation;
+            a->act.param = "start_emotion_sad";
+        }
+        if (LogicNode* r = sp->findNode(sp->rootId)) r->nextTrue = cid;
+        if (LogicNode* c = sp->findNode(cid)) {
+            c->nextTrue = aT;
+            c->nextFalse = aF;
+        }
+        pushSpawnGraphEdit(sp->id, "Template: If/Else", false, before);
+    }
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("if flag1 == 1: start_emotion_happy  else: "
+                          "start_emotion_sad");
+    ImGui::SameLine();
+    if (ImGui::Button("Reset view")) nodeEdScroll_ = glm::vec2(0.0f);
+    ImGui::Separator();
+
+    ImGui::BeginChild("##nodeparams", ImVec2(250.0f, 0.0f), true);
+    nodeEdParamsPanel(*sp);
+    ImGui::EndChild();
+    ImGui::SameLine();
+    ImGui::BeginChild("##nodecanvas", ImVec2(0.0f, 0.0f), true,
+                      ImGuiWindowFlags_NoScrollbar |
+                      ImGuiWindowFlags_NoScrollWithMouse);
+    nodeEdCanvas(*sp);
+    ImGui::EndChild();
+}
+
+void App::nodeEdParamsPanel(SpawnPoint& sp) {
+    ImGui::TextDisabled("Selected node");
+    ImGui::Separator();
+    LogicNode* n = sp.findNode(nodeEdSelectedNode_);
+    if (!n) {
+        ImGui::TextWrapped("Click a node to edit it.");
+        ImGui::Spacing();
+        ImGui::TextWrapped("Right-click canvas: add condition/action. "
+                           "Drag from a pin to link. Middle-drag pans. "
+                           "Right-click a node: delete/unlink.");
+        return;
+    }
+
+    // Undo capture for continuous widgets (text/sliders/drags): snapshot on
+    // activation, push on deactivation-after-edit. Combos (single-shot
+    // changes) push immediately with a manually captured before-state.
+    auto track = [&]() {
+        if (ImGui::IsItemActivated() && !nodeEdEditActive_) {
+            nodeEdEditActive_ = true;
+            nodeEdBefore_ = SpawnGraphCommand::capture(sp);
+        }
+        if (ImGui::IsItemDeactivatedAfterEdit() && nodeEdEditActive_) {
+            pushSpawnGraphEdit(sp.id, "Edit Node", true, nodeEdBefore_);
+            nodeEdEditActive_ = false;
+        }
+    };
+
+    ImGui::Text("Node #%d", n->id);
+    if (n->kind == LogicNode::Root) {
+        ImGui::TextWrapped("Graph entry point. Link its output to a "
+                           "condition or an action.");
+        return;
+    }
+
+    if (n->kind == LogicNode::Cond) {
+        const char* names[] = { "Always", "Flag ==", "Flag !=", "Flag >",
+                                "Flag <", "Random %", "Player near" };
+        int ct = (int)n->cond.type;
+        SpawnGraphCommand::State beforeCombo = SpawnGraphCommand::capture(sp);
+        if (ImGui::Combo("Condition", &ct, names, 7)) {
+            n->cond.type = (Condition::Type)ct;
+            pushSpawnGraphEdit(sp.id, "Edit Node", true, beforeCombo);
+        }
+        bool needFlag = n->cond.type == Condition::FlagEquals ||
+                        n->cond.type == Condition::FlagNotEquals ||
+                        n->cond.type == Condition::FlagGreater ||
+                        n->cond.type == Condition::FlagLess;
+        if (needFlag) {
+            ImGui::InputInt("Flag id", &n->cond.flagId);
+            track();
+            ImGui::InputInt("Value", &n->cond.value);
+            track();
+        } else if (n->cond.type == Condition::RandomChance) {
+            ImGui::SliderInt("Percent", &n->cond.value, 0, 100);
+            track();
+        } else if (n->cond.type == Condition::PlayerNear) {
+            ImGui::SliderInt("Radius (m)", &n->cond.value, 1, 50);
+            track();
+        }
+        ImGui::TextWrapped("true -> top (green) pin, false -> bottom (red).");
+    } else {
+        const char* names[] = { "Spawn", "Despawn", "Set animation",
+                                "Camera focus", "Wait", "Set flag",
+                                "Dialog line", "Play sound" };
+        int at = (int)n->act.type;
+        SpawnGraphCommand::State beforeCombo = SpawnGraphCommand::capture(sp);
+        if (ImGui::Combo("Action", &at, names, 8)) {
+            n->act.type = (Action::Type)at;
+            pushSpawnGraphEdit(sp.id, "Edit Node", true, beforeCombo);
+        }
+        switch (n->act.type) {
+            case Action::Spawn:
+            case Action::Despawn:
+                ImGui::DragFloat("Delay (s)", &n->act.floatParam, 0.05f,
+                                 0.0f, 120.0f, "%.1f");
+                track();
+                break;
+            case Action::SetAnimation: {
+                char buf[96];
+                std::snprintf(buf, sizeof(buf), "%s", n->act.param.c_str());
+                if (ImGui::InputText("Animation", buf, sizeof(buf)))
+                    n->act.param = buf;
+                track();
+                break;
+            }
+            case Action::CameraFocus: {
+                // -1 = this marker, otherwise a scene-camera id.
+                const char* preview = "This marker";
+                if (n->act.intParam >= 0) {
+                    const SceneCamera* c = cameraRig_.findCamera(n->act.intParam);
+                    preview = c ? c->name.c_str() : "(missing camera)";
+                }
+                SpawnGraphCommand::State beforeSel =
+                    SpawnGraphCommand::capture(sp);
+                if (ImGui::BeginCombo("Camera", preview)) {
+                    if (ImGui::Selectable("This marker", n->act.intParam < 0)) {
+                        n->act.intParam = -1;
+                        pushSpawnGraphEdit(sp.id, "Edit Node", true, beforeSel);
+                    }
+                    for (const auto& c : cameraRig_.cameras()) {
+                        char lbl[96];
+                        std::snprintf(lbl, sizeof(lbl), "%s (#%d)",
+                                      c.name.c_str(), c.id);
+                        if (ImGui::Selectable(lbl, n->act.intParam == c.id)) {
+                            n->act.intParam = c.id;
+                            pushSpawnGraphEdit(sp.id, "Edit Node", true,
+                                               beforeSel);
+                        }
+                    }
+                    ImGui::EndCombo();
+                }
+                ImGui::DragFloat("Blend (s)", &n->act.floatParam, 0.05f,
+                                 0.0f, 30.0f, "%.1f");
+                track();
+                break;
+            }
+            case Action::Wait:
+                ImGui::DragFloat("Seconds", &n->act.floatParam, 0.05f,
+                                 0.0f, 300.0f, "%.1f");
+                track();
+                break;
+            case Action::SetFlag:
+                ImGui::InputInt("Flag id", &n->act.intParam);
+                track();
+                ImGui::InputInt("Value", &n->act.intParam2);
+                track();
+                break;
+            case Action::DialogLine: {
+                char buf[96];
+                std::snprintf(buf, sizeof(buf), "%s", n->act.param.c_str());
+                if (ImGui::InputText("Dialog id", buf, sizeof(buf)))
+                    n->act.param = buf;
+                track();
+                break;
+            }
+            case Action::PlaySound: {
+                char buf[96];
+                std::snprintf(buf, sizeof(buf), "%s", n->act.param.c_str());
+                if (ImGui::InputText("Sound", buf, sizeof(buf)))
+                    n->act.param = buf;
+                track();
+                break;
+            }
+            default: break;
+        }
+        ImGui::TextWrapped("Actions chain through the output pin (executed "
+                           "in order by the game).");
+    }
+
+    ImGui::Separator();
+    if (ImGui::Button("Delete node")) {
+        SpawnGraphCommand::State before = SpawnGraphCommand::capture(sp);
+        int id = n->id;
+        sp.removeNode(id);
+        pushSpawnGraphEdit(sp.id, "Delete Node", false, before);
+        if (nodeEdSelectedNode_ == id) nodeEdSelectedNode_ = -1;
+    }
+}
+
+void App::nodeEdCanvas(SpawnPoint& sp) {
+    const float NODE_W = 168.0f;
+    const float ROOT_W = 120.0f;
+    const float PIN_R  = 6.0f;
+    const float TITLE_H = 20.0f;
+
+    ImVec2 origin = ImGui::GetCursorScreenPos();
+    ImVec2 avail  = ImGui::GetContentRegionAvail();
+    ImGui::InvisibleButton("##canvas", avail,
+                           ImGuiButtonFlags_MouseButtonLeft |
+                           ImGuiButtonFlags_MouseButtonRight |
+                           ImGuiButtonFlags_MouseButtonMiddle);
+    const bool hovered = ImGui::IsItemHovered();
+    const ImVec2 mouse = ImGui::GetIO().MousePos;
+    const glm::vec2 mCanvas(mouse.x - origin.x + nodeEdScroll_.x,
+                            mouse.y - origin.y + nodeEdScroll_.y);
+
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    dl->PushClipRect(origin, ImVec2(origin.x + avail.x, origin.y + avail.y),
+                     true);
+
+    auto nodeSize = [&](const LogicNode& n) {
+        if (n.kind == LogicNode::Root) return ImVec2(ROOT_W, 46.0f);
+        return ImVec2(NODE_W, n.kind == LogicNode::Cond ? 70.0f : 62.0f);
+    };
+    auto nodeP0 = [&](const LogicNode& n) {
+        return ImVec2(origin.x + n.uiPos.x - nodeEdScroll_.x,
+                      origin.y + n.uiPos.y - nodeEdScroll_.y);
+    };
+    auto inPin = [&](const LogicNode& n) {
+        ImVec2 p0 = nodeP0(n);
+        ImVec2 sz = nodeSize(n);
+        return ImVec2(p0.x, p0.y + sz.y * 0.5f);
+    };
+    auto outPin = [&](const LogicNode& n, bool falsePin) {
+        ImVec2 p0 = nodeP0(n);
+        ImVec2 sz = nodeSize(n);
+        if (n.kind == LogicNode::Cond)
+            return ImVec2(p0.x + sz.x,
+                          falsePin ? p0.y + sz.y - 14.0f : p0.y + 26.0f);
+        return ImVec2(p0.x + sz.x, p0.y + sz.y * 0.5f);
+    };
+    auto dist2 = [](ImVec2 a, ImVec2 b) {
+        float dx = a.x - b.x, dy = a.y - b.y;
+        return dx * dx + dy * dy;
+    };
+    auto hitNode = [&](ImVec2 p) -> int {
+        for (const auto& n : sp.nodes) {
+            ImVec2 p0 = nodeP0(n);
+            ImVec2 sz = nodeSize(n);
+            if (p.x >= p0.x && p.x <= p0.x + sz.x &&
+                p.y >= p0.y && p.y <= p0.y + sz.y) return n.id;
+        }
+        return -1;
+    };
+
+    // --- Interactions ---
+    if (nodeEdLinkFrom_ >= 0) {
+        // Link drag: release over an in-pin connects, elsewhere cancels.
+        if (!ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
+            float bestD = (PIN_R + 5.0f) * (PIN_R + 5.0f);
+            int target = -1;
+            for (const auto& n : sp.nodes) {
+                if (n.kind == LogicNode::Root) continue;   // root has no input
+                float d = dist2(mouse, inPin(n));
+                if (d < bestD) { bestD = d; target = n.id; }
+            }
+            if (target >= 0 && target != nodeEdLinkFrom_ &&
+                !spawnGraphReachable(sp, target, nodeEdLinkFrom_)) {
+                SpawnGraphCommand::State before =
+                    SpawnGraphCommand::capture(sp);
+                if (LogicNode* src = sp.findNode(nodeEdLinkFrom_)) {
+                    if (nodeEdLinkFalse_) src->nextFalse = target;
+                    else                  src->nextTrue  = target;
+                }
+                pushSpawnGraphEdit(sp.id, "Link Nodes", false, before);
+            }
+            nodeEdLinkFrom_ = -1;
+        }
+    } else if (nodeEdDragNode_ >= 0) {
+        if (ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
+            if (LogicNode* n = sp.findNode(nodeEdDragNode_)) {
+                // Snap to an 8px grid.
+                n->uiPos.x = std::round((mCanvas.x - nodeEdDragOff_.x) / 8.0f) * 8.0f;
+                n->uiPos.y = std::round((mCanvas.y - nodeEdDragOff_.y) / 8.0f) * 8.0f;
+            }
+        } else {
+            // End of drag: one undo entry if the node actually moved.
+            bool moved = false;
+            for (const auto& bn : nodeEdBefore_.nodes) {
+                const LogicNode* cur = sp.findNode(bn.id);
+                if (cur && cur->uiPos != bn.uiPos) { moved = true; break; }
+            }
+            if (moved)
+                pushSpawnGraphEdit(sp.id, "Move Node", false, nodeEdBefore_);
+            nodeEdDragNode_ = -1;
+        }
+    } else if (nodeEdPanning_) {
+        if (ImGui::IsMouseDown(ImGuiMouseButton_Middle)) {
+            nodeEdScroll_.x -= ImGui::GetIO().MouseDelta.x;
+            nodeEdScroll_.y -= ImGui::GetIO().MouseDelta.y;
+        } else {
+            nodeEdPanning_ = false;
+        }
+    } else if (hovered) {
+        if (ImGui::IsMouseClicked(ImGuiMouseButton_Middle))
+            nodeEdPanning_ = true;
+        if (ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
+            // Priority: out-pin > node body > empty (deselect).
+            int pinNode = -1;
+            bool pinFalse = false;
+            float bestD = (PIN_R + 5.0f) * (PIN_R + 5.0f);
+            for (const auto& n : sp.nodes) {
+                float d = dist2(mouse, outPin(n, false));
+                if (d < bestD) { bestD = d; pinNode = n.id; pinFalse = false; }
+                if (n.kind == LogicNode::Cond) {
+                    d = dist2(mouse, outPin(n, true));
+                    if (d < bestD) { bestD = d; pinNode = n.id; pinFalse = true; }
+                }
+            }
+            if (pinNode >= 0) {
+                nodeEdLinkFrom_ = pinNode;
+                nodeEdLinkFalse_ = pinFalse;
+            } else {
+                int hit = hitNode(mouse);
+                nodeEdSelectedNode_ = hit;
+                if (hit >= 0) {
+                    nodeEdDragNode_ = hit;
+                    nodeEdBefore_ = SpawnGraphCommand::capture(sp);
+                    const LogicNode* n = sp.findNode(hit);
+                    nodeEdDragOff_ = mCanvas - n->uiPos;
+                }
+            }
+        }
+        if (ImGui::IsMouseClicked(ImGuiMouseButton_Right)) {
+            nodeEdCtxNode_ = hitNode(mouse);
+            nodeEdCtxPos_ = mCanvas;
+            ImGui::OpenPopup("##nodectx");
+        }
+    }
+
+    // Context popup (add / delete / unlink).
+    if (ImGui::BeginPopup("##nodectx")) {
+        if (nodeEdCtxNode_ >= 0) {
+            LogicNode* n = sp.findNode(nodeEdCtxNode_);
+            if (n && n->kind != LogicNode::Root) {
+                if (ImGui::MenuItem("Delete node")) {
+                    SpawnGraphCommand::State before =
+                        SpawnGraphCommand::capture(sp);
+                    int id = n->id;
+                    sp.removeNode(id);
+                    pushSpawnGraphEdit(sp.id, "Delete Node", false, before);
+                    if (nodeEdSelectedNode_ == id) nodeEdSelectedNode_ = -1;
+                }
+                if (ImGui::MenuItem("Unlink outputs")) {
+                    SpawnGraphCommand::State before =
+                        SpawnGraphCommand::capture(sp);
+                    n->nextTrue = -1;
+                    n->nextFalse = -1;
+                    pushSpawnGraphEdit(sp.id, "Unlink", false, before);
+                }
+            } else {
+                ImGui::TextDisabled("Root node (fixed)");
+            }
+        } else {
+            if (ImGui::MenuItem("Add condition")) {
+                SpawnGraphCommand::State before =
+                    SpawnGraphCommand::capture(sp);
+                nodeEdSelectedNode_ =
+                    sp.addNode(LogicNode::Cond, nodeEdCtxPos_);
+                pushSpawnGraphEdit(sp.id, "Add Node", false, before);
+            }
+            ImGui::Separator();
+            for (int t = 0; t <= (int)Action::PlaySound; ++t) {
+                char lbl[64];
+                std::snprintf(lbl, sizeof(lbl), "Add: %s", actTypeName(t));
+                if (ImGui::MenuItem(lbl)) {
+                    SpawnGraphCommand::State before =
+                        SpawnGraphCommand::capture(sp);
+                    int nid = sp.addNode(LogicNode::Act, nodeEdCtxPos_);
+                    if (LogicNode* a = sp.findNode(nid))
+                        a->act.type = (Action::Type)t;
+                    nodeEdSelectedNode_ = nid;
+                    pushSpawnGraphEdit(sp.id, "Add Node", false, before);
+                }
+            }
+        }
+        ImGui::EndPopup();
+    }
+
+    // --- Drawing ---
+    // Grid dots.
+    const float grid = 32.0f;
+    ImU32 gridCol = IM_COL32(255, 255, 255, 13);
+    float sx = std::fmod(nodeEdScroll_.x, grid);
+    float sy = std::fmod(nodeEdScroll_.y, grid);
+    for (float x = origin.x - sx; x < origin.x + avail.x; x += grid)
+        for (float y = origin.y - sy; y < origin.y + avail.y; y += grid)
+            dl->AddCircleFilled(ImVec2(x, y), 1.0f, gridCol);
+
+    // Links (below nodes).
+    auto bezier = [&](ImVec2 a, ImVec2 b, ImU32 col) {
+        float dx = std::max(40.0f, std::abs(b.x - a.x) * 0.5f);
+        dl->AddBezierCubic(a, ImVec2(a.x + dx, a.y),
+                           ImVec2(b.x - dx, b.y), b, col, 2.5f);
+    };
+    for (const auto& n : sp.nodes) {
+        if (n.nextTrue >= 0) {
+            if (const LogicNode* t = sp.findNode(n.nextTrue)) {
+                ImU32 col = n.kind == LogicNode::Cond
+                                ? IM_COL32(90, 220, 110, 255)
+                                : IM_COL32(185, 185, 195, 230);
+                bezier(outPin(n, false), inPin(*t), col);
+            }
+        }
+        if (n.kind == LogicNode::Cond && n.nextFalse >= 0) {
+            if (const LogicNode* t = sp.findNode(n.nextFalse))
+                bezier(outPin(n, true), inPin(*t), IM_COL32(230, 100, 90, 255));
+        }
+    }
+    // In-progress link drag.
+    if (nodeEdLinkFrom_ >= 0) {
+        if (const LogicNode* src = sp.findNode(nodeEdLinkFrom_)) {
+            ImU32 col = nodeEdLinkFalse_ ? IM_COL32(230, 100, 90, 255)
+                                         : IM_COL32(90, 220, 110, 255);
+            bezier(outPin(*src, nodeEdLinkFalse_), mouse, col);
+        }
+    }
+
+    // Nodes.
+    for (const auto& n : sp.nodes) {
+        ImVec2 p0 = nodeP0(n);
+        ImVec2 sz = nodeSize(n);
+        ImVec2 p1(p0.x + sz.x, p0.y + sz.y);
+        ImU32 titleCol = n.kind == LogicNode::Root      ? IM_COL32(88, 88, 102, 255) :
+                         n.kind == LogicNode::Cond ? IM_COL32(185, 122, 48, 255)
+                                                        : IM_COL32(58, 108, 185, 255);
+        dl->AddRectFilled(p0, p1, IM_COL32(37, 39, 47, 255), 6.0f);
+        dl->AddRectFilled(p0, ImVec2(p1.x, p0.y + TITLE_H), titleCol, 6.0f,
+                          ImDrawFlags_RoundCornersTop);
+        dl->AddRect(p0, p1,
+                    n.id == nodeEdSelectedNode_ ? IM_COL32(255, 230, 110, 255)
+                                                : IM_COL32(18, 18, 22, 255),
+                    6.0f, 0, n.id == nodeEdSelectedNode_ ? 2.0f : 1.0f);
+        const char* title = n.kind == LogicNode::Root      ? "ROOT" :
+                            n.kind == LogicNode::Cond ? "IF" : "DO";
+        dl->AddText(ImVec2(p0.x + 7, p0.y + 3), IM_COL32(255, 255, 255, 255),
+                    title);
+
+        std::string line1, line2;
+        if (n.kind == LogicNode::Root) {
+            line1 = "scene start";
+        } else if (n.kind == LogicNode::Cond) {
+            line1 = condTypeName(n.cond.type);
+            line2 = condSummary(n.cond);
+        } else {
+            line1 = actTypeName(n.act.type);
+            line2 = actSummary(n.act);
+        }
+        dl->AddText(ImVec2(p0.x + 8, p0.y + TITLE_H + 7),
+                    IM_COL32(222, 222, 228, 255), line1.c_str());
+        if (!line2.empty())
+            dl->AddText(ImVec2(p0.x + 8, p0.y + TITLE_H + 23),
+                        IM_COL32(158, 163, 175, 255), line2.c_str());
+
+        // Pins.
+        if (n.kind != LogicNode::Root) {
+            dl->AddCircleFilled(inPin(n), PIN_R, IM_COL32(205, 205, 215, 255));
+            dl->AddCircle(inPin(n), PIN_R, IM_COL32(18, 18, 22, 255), 0, 1.5f);
+        }
+        if (n.kind == LogicNode::Cond) {
+            ImVec2 ot = outPin(n, false);
+            ImVec2 of = outPin(n, true);
+            dl->AddCircleFilled(ot, PIN_R, IM_COL32(90, 220, 110, 255));
+            dl->AddCircleFilled(of, PIN_R, IM_COL32(230, 100, 90, 255));
+            dl->AddText(ImVec2(ot.x - 15, ot.y - 7), IM_COL32(90, 220, 110, 255), "T");
+            dl->AddText(ImVec2(of.x - 15, of.y - 7), IM_COL32(230, 100, 90, 255), "F");
+        } else {
+            dl->AddCircleFilled(outPin(n, false), PIN_R,
+                                IM_COL32(205, 205, 215, 255));
+        }
+    }
+
+    dl->PopClipRect();
 }
 

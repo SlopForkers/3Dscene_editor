@@ -32,6 +32,72 @@ void CameraTool::drawPanelContent(App& app) {
 }
 
 // ============================================================================
+// SpawnTool — spawn marker picking / moving / placement (cursor mode)
+// ============================================================================
+
+void SpawnTool::cancelDrag() {
+    moving_ = false;
+    moveId_ = -1;
+}
+
+void SpawnTool::drawPanelContent(App& app) {
+    app.drawSpawnToolContent();
+}
+
+bool SpawnTool::handleInput(App& app, float /*dt*/, const ImGuiIO& /*io*/,
+                            bool overUI, bool /*typing*/) {
+    bool ctrl = g_input.keyDown(GLFW_KEY_LEFT_CONTROL) ||
+                g_input.keyDown(GLFW_KEY_RIGHT_CONTROL);
+
+    if (g_input.mousePressed(Input::Left) && !overUI) {
+        glm::vec3 ro, rd;
+        app.cursorRay(ro, rd);
+        if (ctrl) {
+            // Ctrl+click places a new marker at the terrain hit.
+            glm::vec3 hit;
+            if (app.terrain_.raycast(ro, rd, hit)) app.addSpawnAt(hit);
+            return true;
+        }
+        int id = app.pickSpawn(ro, rd);
+        app.selectedSpawnId_ = id;   // -1 on empty click = deselect
+        if (id >= 0) {
+            app.showSpawns_ = true;
+            SpawnPoint* sp = app.spawns_.findSpawn(id);
+            if (sp) {
+                // Begin a move drag; capture fields for the undo command.
+                moving_ = true;
+                moveId_ = id;
+                moveBefore_ = SpawnEditCommand::capture(*sp);
+            }
+        }
+        return id >= 0;
+    }
+
+    if (moving_ && g_input.mouseDown(Input::Left)) {
+        SpawnPoint* sp = app.spawns_.findSpawn(moveId_);
+        if (sp) {
+            glm::vec3 ro, rd;
+            app.cursorRay(ro, rd);
+            glm::vec3 hit;
+            if (app.terrain_.raycast(ro, rd, hit)) sp->position = hit;
+        }
+    }
+    if (g_input.mouseReleased(Input::Left) && moving_) {
+        SpawnPoint* sp = app.spawns_.findSpawn(moveId_);
+        if (sp) {
+            SpawnEditCommand::Fields after = SpawnEditCommand::capture(*sp);
+            if (after.position != moveBefore_.position) {
+                app.history_.push(std::make_unique<SpawnEditCommand>(
+                    app.spawns_, moveId_, moveBefore_, after));
+            }
+        }
+        moving_ = false;
+        moveId_ = -1;
+    }
+    return moving_;
+}
+
+// ============================================================================
 // TerrainTool — brush sculpt + vegetation painting
 // ============================================================================
 

@@ -300,6 +300,22 @@ static void CatCamView(ImDrawList* dl, ImVec2 p0, ImVec2 p1, ImU32 col) {
 
 
 
+static void CatSpawns(ImDrawList* dl, ImVec2 p0, ImVec2 p1, ImU32 col) {
+    // Person marker: head circle, body, arms, legs.
+    float w = p1.x - p0.x, h = p1.y - p0.y;
+    ImVec2 c((p0.x + p1.x) * 0.5f, (p0.y + p1.y) * 0.5f);
+    dl->AddCircle(ImVec2(c.x, c.y - h * 0.24f), w * 0.14f, col, 0, 2.0f);
+    dl->AddLine(ImVec2(c.x, c.y - h * 0.08f), ImVec2(c.x, c.y + h * 0.16f), col, 2.2f);
+    dl->AddLine(ImVec2(c.x - w * 0.2f, c.y + h * 0.02f),
+                ImVec2(c.x + w * 0.2f, c.y + h * 0.02f), col, 2.2f);
+    dl->AddLine(ImVec2(c.x, c.y + h * 0.16f),
+                ImVec2(c.x - w * 0.16f, c.y + h * 0.42f), col, 2.2f);
+    dl->AddLine(ImVec2(c.x, c.y + h * 0.16f),
+                ImVec2(c.x + w * 0.16f, c.y + h * 0.42f), col, 2.2f);
+}
+
+
+
 IconFn brushIcon(int type) {
     switch (type) {
         case Terrain::BrushParams::Raise:    return &Raise;
@@ -329,6 +345,7 @@ IconFn catIcon(int cat) {
         case App::CatFile:       return &CatFile;
         case App::CatCameras:    return &CatCameras;
         case App::CatCamView:    return &CatCamView;
+        case App::CatSpawns:     return &CatSpawns;
         default: return nullptr;
     }
 }
@@ -348,6 +365,7 @@ const char* catName(int cat) {
         case App::CatFile:       return "File";
         case App::CatCameras:    return "Cameras";
         case App::CatCamView:    return "Camera View";
+        case App::CatSpawns:     return "Spawns";
         default: return "?";
     }
 }

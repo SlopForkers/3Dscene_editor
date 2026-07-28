@@ -10,6 +10,7 @@ class CameraRig;
 class PropManager;
 class DetailSystem;
 class BuildSystem;
+class SpawnManager;
 class Shader;
 class Model;
 
@@ -21,6 +22,7 @@ struct SceneContext {
     PropManager& props;
     DetailSystem& details;
     BuildSystem& build;
+    SpawnManager& spawns;
     std::vector<std::shared_ptr<Model>>& modelLibrary;
     Shader& skyboxConvertShader;
     float& skyExposure;

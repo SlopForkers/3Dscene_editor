@@ -3,6 +3,7 @@
 #include "skybox.h"
 #include "camera.h"
 #include "scene_camera.h"
+#include "spawn.h"
 #include "prop.h"
 #include "detail.h"
 #include "build.h"
@@ -115,6 +116,45 @@ bool saveScene(const std::string& path, const SceneContext& ctx) {
     }
     root["cameras"] = camsArr;
     root["activeCamera"] = ctx.cameraRig.activeId();
+
+    // Character spawn markers (with their condition/action logic graphs).
+    nlohmann::json spawnsArr = nlohmann::json::array();
+    for (const auto& s : ctx.spawns.spawns()) {
+        nlohmann::json sj = nlohmann::json::object();
+        sj["id"]   = s.id;
+        sj["name"] = s.name;
+        sj["tag"]  = s.tag;
+        sj["px"] = s.position.x;
+        sj["py"] = s.position.y;
+        sj["pz"] = s.position.z;
+        sj["yaw"]   = s.yaw;
+        sj["model"] = relPath(s.modelPath, baseDir);
+        sj["scale"] = s.scale;
+        sj["anim"]  = s.defaultAnim;
+        sj["root"]  = s.rootId;
+        nlohmann::json nodesArr = nlohmann::json::array();
+        for (const auto& n : s.nodes) {
+            nlohmann::json nj = nlohmann::json::object();
+            nj["id"] = n.id;
+            nj["kind"] = (int)n.kind;
+            nj["ct"] = (int)n.cond.type;
+            nj["flag"] = n.cond.flagId;
+            nj["val"] = n.cond.value;
+            nj["at"] = (int)n.act.type;
+            nj["param"] = n.act.param;
+            nj["ip"]  = n.act.intParam;
+            nj["ip2"] = n.act.intParam2;
+            nj["fp"]  = n.act.floatParam;
+            nj["ux"] = n.uiPos.x;
+            nj["uy"] = n.uiPos.y;
+            nj["t"] = n.nextTrue;
+            nj["f"] = n.nextFalse;
+            nodesArr.push_back(nj);
+        }
+        sj["nodes"] = nodesArr;
+        spawnsArr.push_back(sj);
+    }
+    root["spawns"] = spawnsArr;
 
     // Props.
     nlohmann::json propsArr = nlohmann::json::array();
@@ -372,6 +412,7 @@ bool loadScene(const std::string& path, SceneContext& ctx) {
     ctx.details.clearPrototypes();
     ctx.build.clear();
     ctx.cameraRig.clear();
+    ctx.spawns.clear();
     ctx.modelLibrary.clear();
     ctx.selectedBlockId = -1;
     ctx.selectedBlockFace = -1;
@@ -502,6 +543,76 @@ bool loadScene(const std::string& path, SceneContext& ctx) {
             }
         }
         ctx.cameraRig.setActive(root.value("activeCamera", -1));
+    }
+
+    // --- Spawn markers ---
+    const auto& spawns = root["spawns"];
+    if (spawns.is_array()) {
+        for (size_t i = 0; i < spawns.size(); ++i) {
+            const auto& sj = spawns[i];
+            SpawnPoint s;
+            s.name = sj.value("name", "Spawn");
+            s.tag  = sj.value("tag", "");
+            s.position = glm::vec3(sj.value("px", 0.0f), sj.value("py", 0.0f),
+                                   sj.value("pz", 0.0f));
+            s.yaw   = sj.value("yaw", 0.0f);
+            std::string mdl = sj.value("model", "");
+            s.modelPath = mdl.empty() ? "" : absPath(mdl, baseDir);
+            s.scale = std::clamp(sj.value("scale", 1.0f), 0.01f, 100.0f);
+            s.defaultAnim = sj.value("anim", "");
+            s.rootId = sj.value("root", -1);
+            int maxNodeId = -1;
+            const auto& nodes = sj["nodes"];
+            if (nodes.is_array()) {
+                for (size_t k = 0; k < nodes.size(); ++k) {
+                    const auto& nj = nodes[k];
+                    LogicNode n;
+                    n.id = nj.value("id", -1);
+                    if (n.id < 0) continue;
+                    int kind = nj.value("kind", (int)LogicNode::Root);
+                    n.kind = (kind >= 0 && kind <= 2) ? (LogicNode::Kind)kind
+                                                      : LogicNode::Act;
+                    n.cond.type = (Condition::Type)std::clamp(
+                        nj.value("ct", 0), 0, (int)Condition::PlayerNear);
+                    n.cond.flagId = nj.value("flag", 0);
+                    n.cond.value  = nj.value("val", 0);
+                    n.act.type = (Action::Type)std::clamp(
+                        nj.value("at", 0), 0, (int)Action::PlaySound);
+                    n.act.param     = nj.value("param", "");
+                    n.act.intParam  = nj.value("ip", -1);
+                    n.act.intParam2 = nj.value("ip2", 0);
+                    n.act.floatParam = nj.value("fp", 0.0f);
+                    n.uiPos = glm::vec2(nj.value("ux", 0.0f),
+                                        nj.value("uy", 0.0f));
+                    n.nextTrue  = nj.value("t", -1);
+                    n.nextFalse = nj.value("f", -1);
+                    maxNodeId = std::max(maxNodeId, n.id);
+                    s.nodes.push_back(n);
+                }
+            }
+            s.nextNodeId = maxNodeId + 1;
+            // Validate links: drop references to nodes that do not exist.
+            for (auto& n : s.nodes) {
+                if (n.nextTrue >= 0 && !s.findNode(n.nextTrue))   n.nextTrue = -1;
+                if (n.nextFalse >= 0 && !s.findNode(n.nextFalse)) n.nextFalse = -1;
+            }
+            int savedId = sj.value("id", -1);
+            if (savedId >= 0 && !ctx.spawns.findSpawn(savedId)) {
+                s.id = savedId;
+                // addSpawnWithId keeps ids; ensure the root survives too.
+                if (s.rootId < 0 || !s.findNode(s.rootId)) {
+                    LogicNode root;
+                    root.kind = LogicNode::Root;
+                    root.id = s.nextNodeId++;
+                    root.uiPos = glm::vec2(20.0f, 120.0f);
+                    s.rootId = root.id;
+                    s.nodes.insert(s.nodes.begin(), root);
+                }
+                ctx.spawns.addSpawnWithId(s);
+            } else {
+                ctx.spawns.addSpawn(std::move(s));
+            }
+        }
     }
 
     return true;
