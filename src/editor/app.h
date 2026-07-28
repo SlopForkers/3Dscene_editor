@@ -20,6 +20,7 @@
 #include "commands.h"
 #include <memory>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 class Model;
@@ -245,6 +246,19 @@ private:
     void drawCameraFrustums(const glm::mat4& vp);
     void drawSpawnMarkers(const glm::mat4& vp);
     void selectCategory(int cat);
+
+    // Spawn marker models: loaded lazily per marker (keyed by spawn id),
+    // rendered in bind pose. Editing shows all of them; a running simulation
+    // shows only markers whose graph spawned them. Failures are remembered
+    // per path (no per-frame reload spam).
+    std::unordered_map<int, std::shared_ptr<Model>> spawnModels_;
+    std::unordered_map<int, std::string> spawnModelFailed_;
+    void syncSpawnModels();
+    bool spawnModelVisible(const SpawnPoint& s) const;
+    bool anySpawnModelVisible() const;
+    void renderSpawnModels(const glm::mat4& viewProj,
+                           const glm::vec3& lightDir,
+                           const glm::vec3& camPos);
 
     // Spawn Logic node-editor window state (canvas is redrawn every frame).
     glm::vec2 nodeEdScroll_ = glm::vec2(0.0f);

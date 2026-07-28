@@ -257,6 +257,8 @@ void App::shutdown() {
             p.color.destroy();
         }
         camPreviews_.clear();
+        spawnModels_.clear();
+        spawnModelFailed_.clear();
         props_.clear();
         modelLibrary_.clear();
         glfwDestroyWindow(window_);
@@ -621,6 +623,13 @@ void App::renderDepthPass(const glm::mat4& lvp) {
         build_.render(blockShader_, lvp, glm::vec3(0.0f), glm::vec3(0.0f));
     }
 
+    if (!spawns_.spawns().empty()) {
+        propShader_.use();
+        propShader_.setInt("uEnableShadow", 0);
+        assertFrontCull();
+        renderSpawnModels(lvp, glm::vec3(0.0f), glm::vec3(0.0f));
+    }
+
     glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
     // App default: culling OFF (skybox cube is drawn from inside).
     glDisable(GL_CULL_FACE);
@@ -705,12 +714,20 @@ void App::renderWorld(const glm::mat4& view, const glm::mat4& proj,
         blockShader_.setInt("uEnableShadow", enableShadow);
         build_.render(blockShader_, vp, lightDir, camPos);
     }
+    if (anySpawnModelVisible()) {
+        propShader_.use();
+        propShader_.setMat4("uLightViewProj", lvp);
+        propShader_.setInt("uShadowMap", kShadowTexUnit);
+        propShader_.setInt("uEnableShadow", enableShadow);
+        renderSpawnModels(vp, lightDir, camPos);
+    }
 }
 
 void App::renderScene() {
     // Scene renders into the viewport FBO; the UI displays it as an image.
     ensureViewportFbo();
     if (viewportW_ <= 0 || viewportH_ <= 0) return;  // not laid out yet
+    syncSpawnModels();   // lazy load/unload of spawn marker models
     glBindFramebuffer(GL_FRAMEBUFFER, viewportFbo_);
     glViewport(0, 0, viewportW_, viewportH_);
     glClearColor(0.10f, 0.12f, 0.15f, 1.0f);
@@ -1096,6 +1113,91 @@ void App::pushSpawnGraphEdit(int spawnId, const char* name, bool mergeable,
     history_.push(std::make_unique<SpawnGraphCommand>(
         spawns_, spawnId, before, SpawnGraphCommand::capture(*sp),
         name, mergeable));
+}
+
+// ---------------------------------------------------------------------------
+// Spawn marker models (bind pose): lazy per-marker loading + rendering.
+
+// Model::loadFromFile normalises its source path to forward slashes, while
+// SpawnPoint::modelPath keeps the raw form (Windows file dialog returns
+// backslashes). Compare with slashes normalised — a byte-wise compare
+// mismatches every frame and causes a per-frame full model reload.
+static std::string fwdSlashes(std::string p) {
+    std::replace(p.begin(), p.end(), '\\', '/');
+    return p;
+}
+
+void App::syncSpawnModels() {
+    // Drop models whose marker vanished or whose path changed.
+    for (auto it = spawnModels_.begin(); it != spawnModels_.end();) {
+        const SpawnPoint* sp = spawns_.findSpawn(it->first);
+        if (!sp || fwdSlashes(sp->modelPath) != it->second->sourcePath())
+            it = spawnModels_.erase(it);
+        else ++it;
+    }
+    for (auto it = spawnModelFailed_.begin(); it != spawnModelFailed_.end();) {
+        const SpawnPoint* sp = spawns_.findSpawn(it->first);
+        if (!sp || sp->modelPath != it->second)
+            it = spawnModelFailed_.erase(it);
+        else ++it;
+    }
+    // Load missing (once per path; failures are remembered until it changes).
+    for (const auto& s : spawns_.spawns()) {
+        if (s.modelPath.empty() || spawnModels_.count(s.id) ||
+            spawnModelFailed_.count(s.id))
+            continue;
+        auto m = std::make_shared<Model>();
+        if (m->loadFromFile(s.modelPath)) {
+            spawnModels_[s.id] = std::move(m);
+        } else {
+            std::cerr << "Spawn model failed to load: " << s.modelPath << "\n";
+            spawnModelFailed_[s.id] = s.modelPath;
+        }
+    }
+}
+
+bool App::spawnModelVisible(const SpawnPoint& s) const {
+    if (!sim_.running()) return true;   // editing: all marker models shown
+    const SimController::SpawnSim* ss = sim_.simFor(s.id);
+    return ss != nullptr && ss->spawned;
+}
+
+bool App::anySpawnModelVisible() const {
+    for (const auto& s : spawns_.spawns()) {
+        if (!spawnModelVisible(s)) continue;
+        auto it = spawnModels_.find(s.id);
+        if (it != spawnModels_.end() && it->second && it->second->valid())
+            return true;
+    }
+    return false;
+}
+
+// The prop shader must be in use with the shadow uniforms already set;
+// this sets uViewProj/uLightDir/uCamPos itself (works for both the main and
+// the shadow depth pass).
+void App::renderSpawnModels(const glm::mat4& viewProj,
+                            const glm::vec3& lightDir,
+                            const glm::vec3& camPos) {
+    propShader_.use();
+    propShader_.setMat4("uViewProj", viewProj);
+    propShader_.setVec3("uLightDir", lightDir);
+    propShader_.setVec3("uCamPos", camPos);
+    for (const auto& s : spawns_.spawns()) {
+        if (!spawnModelVisible(s)) continue;
+        auto it = spawnModels_.find(s.id);
+        if (it == spawnModels_.end() || !it->second || !it->second->valid())
+            continue;
+        const Model* m = it->second.get();
+        // Marker yaw convention matches the marker arrow: facing (sin,0,cos)
+        // = model +Z. Feet rest on the marker point (AABB bottom at y=0).
+        glm::mat4 w(1.0f);
+        w = glm::translate(w, s.position);
+        w = glm::rotate(w, s.yaw, glm::vec3(0.0f, 1.0f, 0.0f));
+        w = glm::scale(w, glm::vec3(s.scale));
+        w = glm::translate(w, glm::vec3(0.0f, -m->aabbMin().y, 0.0f));
+        propShader_.setMat4("uInstance", w);
+        m->render(propShader_);
+    }
 }
 
 // ---------------------------------------------------------------------------

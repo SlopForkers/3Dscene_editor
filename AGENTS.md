@@ -175,8 +175,12 @@ lives in.
   action chain. RandomChance latches per session (re-roll = restart);
   PlayerNear measures XZ distance to the camera target (the "player"
   proxy). CameraFocus emits requests consumed in `App::updateSimulation`
-  (orbit-pose lerp). Spawned state is editor-only feedback (marker colour +
-  floating label) — markers do NOT render their models yet.
+  (orbit-pose lerp). Marker models render in bind pose via
+  `App::spawnModels_` (lazy per-marker load keyed by spawn id, synced every
+  frame in `renderScene`): editing shows all of them, a running simulation
+  shows only spawned markers (Spawn/Despawn toggle visibility live). Model
+  +Z = marker facing (yaw); feet rest on the marker point. No animation
+  playback yet — the sim's current animation shows as a floating label.
 - **Drag state**: captured at mouse-press (e.g. `buildDragErase_`), never
   re-read modifiers at release. Tool switches (Tab/category click) must
   cancel in-progress drags (`Gizmo::cancelDrag`, `VertexEditor::cancelDrag`,

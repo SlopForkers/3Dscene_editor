@@ -1189,6 +1189,14 @@ void App::drawSpawnsContent() {
     } else {
         ImGui::TextWrapped("Model: %s",
             std::filesystem::path(sel->modelPath).filename().string().c_str());
+        if (spawnModelFailed_.count(sel->id)) {
+            ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.35f, 1.0f),
+                               "(failed to load)");
+        } else if (spawnModels_.count(sel->id)) {
+            ImGui::TextDisabled(sim_.running()
+                ? "(shown when spawned)"
+                : "(shown; in simulation only when spawned)");
+        }
     }
     if (ImGui::Button("Load model...")) {
         SpawnEditCommand::Fields before = SpawnEditCommand::capture(*sel);
