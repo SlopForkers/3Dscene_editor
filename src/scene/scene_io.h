@@ -11,6 +11,7 @@ class PropManager;
 class DetailSystem;
 class BuildSystem;
 class SpawnManager;
+class SimController;
 class Shader;
 class Model;
 
@@ -23,6 +24,7 @@ struct SceneContext {
     DetailSystem& details;
     BuildSystem& build;
     SpawnManager& spawns;
+    SimController& sim;
     std::vector<std::shared_ptr<Model>>& modelLibrary;
     Shader& skyboxConvertShader;
     float& skyExposure;

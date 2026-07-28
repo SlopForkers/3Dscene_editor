@@ -316,6 +316,19 @@ static void CatSpawns(ImDrawList* dl, ImVec2 p0, ImVec2 p1, ImU32 col) {
 
 
 
+static void CatSim(ImDrawList* dl, ImVec2 p0, ImVec2 p1, ImU32 col) {
+    // Play button: circle outline + filled triangle.
+    float w = p1.x - p0.x;
+    ImVec2 c((p0.x + p1.x) * 0.5f, (p0.y + p1.y) * 0.5f);
+    float r = w * 0.4f;
+    dl->AddCircle(c, r, col, 0, 2.0f);
+    dl->AddTriangleFilled(ImVec2(c.x - r * 0.3f, c.y - r * 0.45f),
+                          ImVec2(c.x - r * 0.3f, c.y + r * 0.45f),
+                          ImVec2(c.x + r * 0.5f, c.y), col);
+}
+
+
+
 IconFn brushIcon(int type) {
     switch (type) {
         case Terrain::BrushParams::Raise:    return &Raise;
@@ -346,6 +359,7 @@ IconFn catIcon(int cat) {
         case App::CatCameras:    return &CatCameras;
         case App::CatCamView:    return &CatCamView;
         case App::CatSpawns:     return &CatSpawns;
+        case App::CatSim:        return &CatSim;
         default: return nullptr;
     }
 }
@@ -366,6 +380,7 @@ const char* catName(int cat) {
         case App::CatCameras:    return "Cameras";
         case App::CatCamView:    return "Camera View";
         case App::CatSpawns:     return "Spawns";
+        case App::CatSim:        return "Simulation";
         default: return "?";
     }
 }

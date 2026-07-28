@@ -13,6 +13,7 @@
 #include "build.h"
 #include "scene_camera.h"
 #include "spawn.h"
+#include "sim.h"
 #include "gl_resource.h"
 #include "tools.h"
 #include "history.h"
@@ -37,7 +38,7 @@ public:
         CatHistory,
         CatFile,
         CatCameras, CatCamView,
-        CatSpawns,
+        CatSpawns, CatSim,
         CatCount
     };
 
@@ -66,6 +67,7 @@ public:
     int selectedCameraId_ = -1;
     SpawnManager spawns_;
     int selectedSpawnId_ = -1;
+    SimController sim_;   // in-editor spawn logic simulation (Play/Stop)
     History history_;
     std::vector<std::shared_ptr<Model>> modelLibrary_;
     Noise::Params noiseParams_;
@@ -120,6 +122,9 @@ public:
     void drawSpawnsContent();
     void drawSpawnToolContent();
     void drawSpawnLogicContent();
+    void drawSimulationContent();
+    // World (editor camera) -> main-window pixel position, for overlays.
+    bool worldToScreen(const glm::vec3& p, float& sx, float& sy) const;
 
     // Scene camera interaction: jump the editor orbit camera to a scene
     // camera's pose; cycle steps through the rig ([ / ] hotkeys).
@@ -171,6 +176,7 @@ public:
     bool showCameraView_= false;
     bool showSpawns_    = false;
     bool showSpawnLogic_= false;
+    bool showSimulation_= false;
 
     // Scene cameras: frustum visualisation + preview window options.
     bool showCamFrustums_ = true;
@@ -204,6 +210,16 @@ public:
     int  spawnEditId_ = -1;
     SpawnEditCommand::Fields spawnEditBefore_;
 
+    // Camera focus pull animation (simulation CameraFocus actions): lerps
+    // the orbit camera pose over camAnimDur_ seconds.
+    bool camAnimActive_ = false;
+    float camAnimT_ = 0.0f, camAnimDur_ = 1.0f;
+    glm::vec3 camAnimFromTarget_ = glm::vec3(0.0f), camAnimToTarget_ = glm::vec3(0.0f);
+    float camAnimFromYaw_ = 0.0f, camAnimToYaw_ = 0.0f;
+    float camAnimFromPitch_ = 0.0f, camAnimToPitch_ = 0.0f;
+    float camAnimFromDist_ = 0.0f, camAnimToDist_ = 0.0f;
+    void updateCamAnim(float dt);
+
 private:
     bool initWindow();
     bool initOpenGL();
@@ -211,6 +227,10 @@ private:
     void shutdown();
 
     void handleInput(float dt);
+    // Simulation per-frame step + camera focus pull animation.
+    void updateSimulation(float dt);
+    void startCamAnim(const glm::vec3& target, float yaw, float pitch,
+                      float dist, float duration);
     void renderScene();
     // The shadow + skybox + terrain + props + details + blocks passes,
     // parameterised so both the main viewport and camera previews can use it.
@@ -272,6 +292,7 @@ private:
     void drawCameraViewWindow();
     void drawSpawnsWindow();
     void drawSpawnLogicWindow();
+    void drawSimulationWindow();
     void buildDefaultLayout(unsigned int dockspaceId);
     void ensureViewportFbo();
 

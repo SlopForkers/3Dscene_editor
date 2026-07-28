@@ -313,6 +313,7 @@ int App::run(const std::vector<std::string>& importArgs) {
         g_input.newFrame();
         glfwPollEvents();
         handleInput(dt);
+        updateSimulation(dt);
 
         // Resize handling
         int curFbW = 0, curFbH = 0;
@@ -1037,7 +1038,14 @@ void App::drawSpawnMarkers(const glm::mat4& vp) {
             {tip.x, tip.y, tip.z}, {b1.x, b1.y, b1.z},
             {tip.x, tip.y, tip.z}, {b2.x, b2.y, b2.z},
         };
-        glm::vec3 col(0.3f, 0.85f, 0.9f);                  // teal
+        glm::vec3 col(0.3f, 0.85f, 0.9f);                  // teal (editing)
+        if (sim_.running()) {
+            // Simulation feedback: spawned = green, absent = grey.
+            const SimController::SpawnSim* ss = sim_.simFor(s.id);
+            bool spawned = ss && ss->spawned;
+            col = spawned ? glm::vec3(0.35f, 1.0f, 0.45f)
+                          : glm::vec3(0.45f, 0.45f, 0.5f);
+        }
         if (s.id == selectedSpawnId_) col = glm::vec3(1.0f, 0.9f, 0.2f);
         lineShader_.setVec3("uColor", col);
         glBufferData(GL_ARRAY_BUFFER, sizeof(pts), pts, GL_DYNAMIC_DRAW);
@@ -1088,6 +1096,81 @@ void App::pushSpawnGraphEdit(int spawnId, const char* name, bool mergeable,
     history_.push(std::make_unique<SpawnGraphCommand>(
         spawns_, spawnId, before, SpawnGraphCommand::capture(*sp),
         name, mergeable));
+}
+
+// ---------------------------------------------------------------------------
+// Simulation of spawn logic graphs (in-editor testing).
+
+bool App::worldToScreen(const glm::vec3& p, float& sx, float& sy) const {
+    glm::vec4 clip = camera_.projection() * camera_.view() * glm::vec4(p, 1.0f);
+    if (clip.w <= 0.0f) return false;
+    // NDC -> viewport FBO pixels -> main-window pixels.
+    float ndcX = clip.x / clip.w;
+    float ndcY = clip.y / clip.w;
+    float fx = (ndcX * 0.5f + 0.5f) * float(viewportW_);
+    float fy = (1.0f - (ndcY * 0.5f + 0.5f)) * float(viewportH_);
+    sx = vpWinX_ + fx / vpScaleX_;
+    sy = vpWinY_ + fy / vpScaleY_;
+    return true;
+}
+
+void App::startCamAnim(const glm::vec3& target, float yaw, float pitch,
+                       float dist, float duration) {
+    camAnimFromTarget_ = camera_.target();
+    camAnimFromYaw_ = camera_.yaw();
+    camAnimFromPitch_ = camera_.pitch();
+    camAnimFromDist_ = camera_.distance();
+    camAnimToTarget_ = target;
+    // Shortest-arc yaw interpolation (wrap the delta to [-pi, pi]).
+    float dyaw = yaw - camAnimFromYaw_;
+    camAnimToYaw_ = camAnimFromYaw_ + std::atan2(std::sin(dyaw), std::cos(dyaw));
+    camAnimToPitch_ = pitch;
+    camAnimToDist_ = dist;
+    camAnimDur_ = std::max(duration, 0.01f);
+    camAnimT_ = 0.0f;
+    camAnimActive_ = true;
+}
+
+void App::updateCamAnim(float dt) {
+    if (!camAnimActive_) return;
+    camAnimT_ += dt / camAnimDur_;
+    float t = std::clamp(camAnimT_, 0.0f, 1.0f);
+    float k = t * t * (3.0f - 2.0f * t);   // smoothstep
+    camera_.setTarget(glm::mix(camAnimFromTarget_, camAnimToTarget_, k));
+    camera_.setYaw(camAnimFromYaw_ + (camAnimToYaw_ - camAnimFromYaw_) * k);
+    camera_.setPitch(camAnimFromPitch_ + (camAnimToPitch_ - camAnimFromPitch_) * k);
+    camera_.setDistance(camAnimFromDist_ + (camAnimToDist_ - camAnimFromDist_) * k);
+    if (camAnimT_ >= 1.0f) camAnimActive_ = false;
+}
+
+void App::updateSimulation(float dt) {
+    if (sim_.running()) {
+        // The camera target plays the role of "the player" for PlayerNear.
+        sim_.update(dt, spawns_, camera_.target());
+        int camId = -1;
+        glm::vec3 markerPos(0.0f);
+        float blend = 0.0f;
+        while (sim_.takeCamRequest(camId, markerPos, blend)) {
+            if (camId >= 0) {
+                const SceneCamera* c = cameraRig_.findCamera(camId);
+                if (!c) continue;
+                // Same inverse-orbit math as activateSceneCamera.
+                glm::vec3 off = c->position - c->target;
+                float dist = glm::length(off);
+                if (dist < 1e-3f) continue;
+                float pitch = std::asin(std::clamp(off.y / dist, -1.0f, 1.0f));
+                pitch = std::clamp(pitch, 0.05f, 1.55f);
+                float yaw = std::atan2(off.x, off.z);
+                startCamAnim(c->target, yaw, pitch, dist, blend);
+            } else {
+                // Focus the marker itself (chest height), keep the orbit pose.
+                startCamAnim(markerPos + glm::vec3(0.0f, 1.4f, 0.0f),
+                             camera_.yaw(), camera_.pitch(), camera_.distance(),
+                             blend);
+            }
+        }
+    }
+    updateCamAnim(dt);
 }
 
 // Jump the editor orbit camera to a scene camera's pose. The orbit camera is

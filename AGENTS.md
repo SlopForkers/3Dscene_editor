@@ -55,6 +55,7 @@ src/
  │   ├─ build.cpp/h .............. snap-based blocks + face textures
  │   ├─ scene_camera.cpp/h ....... SceneCamera (id/name/tag/pose/fov) + CameraRig
  │   ├─ spawn.cpp/h .............. spawn markers + condition/action logic graph
+ │   ├─ sim.cpp/h ................ SimController: in-editor logic simulation
  │   ├─ skybox.cpp/h ............. cubemap sky + equirect→cubemap
  │   ├─ gizmo.cpp/h .............. translate/rotate/scale manipulator
  │   ├─ scene.cpp/h .............. App::saveScene/loadScene wrappers (format: scene.h)
@@ -169,6 +170,13 @@ lives in.
   never-reuse rule as other subsystems. `LogicNode::Kind` constants are
   `Cond`/`Act` (un-suffixed names would shadow the `Condition`/`Action`
   structs inside the struct scope).
+- **Simulation**: `SimController` (GL-free, unit-tested) continuously
+  re-resolves each graph from the root; a changed resolution restarts that
+  action chain. RandomChance latches per session (re-roll = restart);
+  PlayerNear measures XZ distance to the camera target (the "player"
+  proxy). CameraFocus emits requests consumed in `App::updateSimulation`
+  (orbit-pose lerp). Spawned state is editor-only feedback (marker colour +
+  floating label) — markers do NOT render their models yet.
 - **Drag state**: captured at mouse-press (e.g. `buildDragErase_`), never
   re-read modifiers at release. Tool switches (Tab/category click) must
   cancel in-progress drags (`Gizmo::cancelDrag`, `VertexEditor::cancelDrag`,

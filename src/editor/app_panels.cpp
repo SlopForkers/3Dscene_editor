@@ -10,6 +10,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <set>
 #include <filesystem>
 #include <iostream>
 #include <random>
@@ -1230,6 +1231,108 @@ void App::drawSpawnsContent() {
     }
     ImGui::TextDisabled("Graph: %d node%s", (int)sel->nodes.size(),
                         sel->nodes.size() == 1 ? "" : "s");
+}
+
+// --------------------------------------------------------------------------
+// Simulation: in-editor testing of spawn logic graphs.
+
+void App::drawSimulationContent() {
+    ImGui::TextDisabled("Spawn logic simulation");
+    ImGui::Separator();
+
+    if (!sim_.running()) {
+        if (ImGui::Button("Play", ImVec2(70.0f, 0.0f))) sim_.start(spawns_);
+        ImGui::SameLine();
+        ImGui::TextDisabled("stopped");
+    } else {
+        if (ImGui::Button("Stop", ImVec2(70.0f, 0.0f))) sim_.stop();
+        ImGui::SameLine();
+        ImGui::TextColored(ImVec4(0.4f, 1.0f, 0.5f, 1.0f), "running");
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Clear log")) sim_.clearLog();
+    ImGui::TextDisabled("PlayerNear: camera target = the player");
+
+    // --- Marker status ---
+    if (ImGui::CollapsingHeader("Markers", ImGuiTreeNodeFlags_DefaultOpen)) {
+        if (spawns_.spawns().empty())
+            ImGui::TextDisabled("(no markers)");
+        for (const auto& s : spawns_.spawns()) {
+            const SimController::SpawnSim* ss = sim_.simFor(s.id);
+            bool spawned = ss && ss->spawned;
+            ImGui::PushID(s.id);
+            ImGui::Bullet();
+            if (spawned) {
+                ImGui::TextColored(ImVec4(0.4f, 1.0f, 0.5f, 1.0f), "%s",
+                                   s.name.c_str());
+            } else {
+                ImGui::TextDisabled("%s", s.name.c_str());
+            }
+            if (ss) {
+                if (!ss->anim.empty()) {
+                    ImGui::SameLine();
+                    ImGui::Text("'%s'", ss->anim.c_str());
+                }
+                if (ss->execNode >= 0) {
+                    const LogicNode* n = s.findNode(ss->execNode);
+                    if (n && ss->timer > 0.0f) {
+                        ImGui::SameLine();
+                        ImGui::TextDisabled("[%s %.1fs]",
+                                            actTypeName((int)n->act.type),
+                                            ss->timer);
+                    }
+                }
+            }
+            ImGui::PopID();
+        }
+    }
+
+    // --- Flags ---
+    if (ImGui::CollapsingHeader("Flags", ImGuiTreeNodeFlags_DefaultOpen)) {
+        // Known flag ids = set flags + every flag referenced by any graph.
+        std::set<int> ids;
+        for (const auto& kv : sim_.flags()) ids.insert(kv.first);
+        for (const auto& s : spawns_.spawns())
+            for (const auto& n : s.nodes) {
+                if (n.kind == LogicNode::Cond &&
+                    n.cond.type != Condition::Always &&
+                    n.cond.type != Condition::RandomChance &&
+                    n.cond.type != Condition::PlayerNear)
+                    ids.insert(n.cond.flagId);
+                if (n.kind == LogicNode::Act && n.act.type == Action::SetFlag)
+                    ids.insert(n.act.intParam);
+            }
+        for (int fid : ids) {
+            ImGui::PushID(fid);
+            int v = sim_.flags()[fid];
+            ImGui::Text("flag %d", fid);
+            ImGui::SameLine(90.0f);
+            ImGui::SetNextItemWidth(120.0f);
+            if (ImGui::InputInt("##v", &v)) sim_.flags()[fid] = v;
+            ImGui::PopID();
+        }
+        if (ids.empty()) ImGui::TextDisabled("(no flags referenced yet)");
+        static int s_newFlagId = 0;
+        ImGui::SetNextItemWidth(120.0f);
+        ImGui::InputInt("##newflag", &s_newFlagId);
+        ImGui::SameLine();
+        if (ImGui::Button("Add flag")) sim_.flags()[s_newFlagId] =
+            sim_.flags().count(s_newFlagId) ? sim_.flags()[s_newFlagId] : 0;
+    }
+
+    // --- Log ---
+    if (ImGui::CollapsingHeader("Log", ImGuiTreeNodeFlags_DefaultOpen)) {
+        ImGui::BeginChild("##simlog", ImVec2(0.0f, 160.0f), true);
+        for (const auto& line : sim_.log())
+            ImGui::TextUnformatted(line.c_str());
+        // Auto-scroll on new lines.
+        static size_t s_lastLogSize = 0;
+        if (sim_.log().size() != s_lastLogSize) {
+            s_lastLogSize = sim_.log().size();
+            ImGui::SetScrollHereY(1.0f);
+        }
+        ImGui::EndChild();
+    }
 }
 
 void App::drawCameraViewContent() {

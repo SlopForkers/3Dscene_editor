@@ -4,6 +4,7 @@
 #include "camera.h"
 #include "scene_camera.h"
 #include "spawn.h"
+#include "sim.h"
 #include "prop.h"
 #include "detail.h"
 #include "build.h"
@@ -155,6 +156,12 @@ bool saveScene(const std::string& path, const SceneContext& ctx) {
         spawnsArr.push_back(sj);
     }
     root["spawns"] = spawnsArr;
+
+    // Simulation flags (initial values for the game / editor testing).
+    nlohmann::json flagsObj = nlohmann::json::object();
+    for (const auto& kv : ctx.sim.flags())
+        flagsObj[std::to_string(kv.first)] = kv.second;
+    root["flags"] = flagsObj;
 
     // Props.
     nlohmann::json propsArr = nlohmann::json::array();
@@ -612,6 +619,17 @@ bool loadScene(const std::string& path, SceneContext& ctx) {
             } else {
                 ctx.spawns.addSpawn(std::move(s));
             }
+        }
+    }
+
+    // --- Simulation flags ---
+    ctx.sim.flags().clear();
+    const auto& flags = root["flags"];
+    if (flags.is_object()) {
+        for (const auto& el : flags.items()) {
+            if (!el.value().is_number_integer()) continue;
+            int key = std::atoi(el.key().c_str());
+            ctx.sim.flags()[key] = el.value().get<int>();
         }
     }
 

@@ -63,6 +63,7 @@ void App::renderImGui() {
     drawCameraViewWindow();
     drawSpawnsWindow();
     drawSpawnLogicWindow();
+    drawSimulationWindow();
     if (showHelp_) drawHelpOverlay();
 
     // Brush value overlay: show radius/strength over the viewport image while
@@ -72,30 +73,51 @@ void App::renderImGui() {
                      g_input.keyDown(GLFW_KEY_RIGHT_SHIFT);
         bool ctrl  = g_input.keyDown(GLFW_KEY_LEFT_CONTROL) ||
                      g_input.keyDown(GLFW_KEY_RIGHT_CONTROL);
-        if ((shift || ctrl) && vpScaleX_ > 0.0f && vpScaleY_ > 0.0f) {
-            glm::vec4 clip = camera_.projection() * camera_.view() *
-                             glm::vec4(brushHit_, 1.0f);
-            if (clip.w > 0.0f) {
-                // NDC -> viewport FBO pixels -> main-window pixels.
-                float ndcX = clip.x / clip.w;
-                float ndcY = clip.y / clip.w;
-                float fx = (ndcX * 0.5f + 0.5f) * float(viewportW_);
-                float fy = (1.0f - (ndcY * 0.5f + 0.5f)) * float(viewportH_);
-                float px = vpWinX_ + fx / vpScaleX_;
-                float py = vpWinY_ + fy / vpScaleY_;
-                char buf[32];
-                if (shift)
-                    std::snprintf(buf, sizeof(buf), "R %.1f", brush_.radius);
-                else
-                    std::snprintf(buf, sizeof(buf), "S %.2f", brush_.strength);
-                ImDrawList* dl = ImGui::GetForegroundDrawList(ImGui::GetMainViewport());
-                ImVec2 ts = ImGui::CalcTextSize(buf);
-                ImVec2 pos(px - ts.x * 0.5f, py - ts.y * 0.5f);
-                dl->AddRectFilled(ImVec2(pos.x - 3, pos.y - 2),
-                                  ImVec2(pos.x + ts.x + 3, pos.y + ts.y + 2),
-                                  IM_COL32(0, 0, 0, 180), 3.0f);
-                dl->AddText(pos, IM_COL32(255, 255, 255, 255), buf);
-            }
+        float px = 0.0f, py = 0.0f;
+        if ((shift || ctrl) && worldToScreen(brushHit_, px, py)) {
+            char buf[32];
+            if (shift)
+                std::snprintf(buf, sizeof(buf), "R %.1f", brush_.radius);
+            else
+                std::snprintf(buf, sizeof(buf), "S %.2f", brush_.strength);
+            ImDrawList* dl = ImGui::GetForegroundDrawList(ImGui::GetMainViewport());
+            ImVec2 ts = ImGui::CalcTextSize(buf);
+            ImVec2 pos(px - ts.x * 0.5f, py - ts.y * 0.5f);
+            dl->AddRectFilled(ImVec2(pos.x - 3, pos.y - 2),
+                              ImVec2(pos.x + ts.x + 3, pos.y + ts.y + 2),
+                              IM_COL32(0, 0, 0, 180), 3.0f);
+            dl->AddText(pos, IM_COL32(255, 255, 255, 255), buf);
+        }
+    }
+
+    // Simulation labels: floating name + animation/status over each marker.
+    if (sim_.running()) {
+        ImDrawList* dl = ImGui::GetForegroundDrawList(ImGui::GetMainViewport());
+        for (const auto& s : spawns_.spawns()) {
+            float sx = 0.0f, sy = 0.0f;
+            glm::vec3 headPos = s.position + glm::vec3(0.0f, 2.2f * s.scale, 0.0f);
+            if (!worldToScreen(headPos, sx, sy)) continue;
+            const SimController::SpawnSim* ss = sim_.simFor(s.id);
+            bool spawned = ss && ss->spawned;
+            std::string line1 = s.name;
+            std::string line2 = spawned
+                ? (ss->anim.empty() ? std::string("spawned")
+                                    : "'" + ss->anim + "'")
+                : std::string("(not spawned)");
+            ImVec2 t1 = ImGui::CalcTextSize(line1.c_str());
+            ImVec2 t2 = ImGui::CalcTextSize(line2.c_str());
+            float w = std::max(t1.x, t2.x);
+            ImU32 stateCol = spawned ? IM_COL32(120, 255, 140, 255)
+                                     : IM_COL32(150, 150, 160, 255);
+            ImVec2 pos(sx - w * 0.5f, sy - t1.y - t2.y - 2.0f);
+            dl->AddRectFilled(ImVec2(pos.x - 4, pos.y - 3),
+                              ImVec2(pos.x + w + 4,
+                                     pos.y + t1.y + t2.y + 5),
+                              IM_COL32(0, 0, 0, 170), 4.0f);
+            dl->AddText(ImVec2(sx - t1.x * 0.5f, pos.y),
+                        IM_COL32(255, 255, 255, 255), line1.c_str());
+            dl->AddText(ImVec2(sx - t2.x * 0.5f, pos.y + t1.y + 2.0f),
+                        stateCol, line2.c_str());
         }
     }
 
@@ -150,6 +172,7 @@ void App::buildDefaultLayout(unsigned int dockspaceId) {
     ImGui::DockBuilderDockWindow("History", dockRight);
     ImGui::DockBuilderDockWindow("Cameras", dockHierarchy);
     ImGui::DockBuilderDockWindow("Spawns", dockHierarchy);
+    ImGui::DockBuilderDockWindow("Simulation", dockRight);
     ImGui::DockBuilderFinish(id);
 }
 
@@ -263,6 +286,7 @@ void App::drawToolbarWindow() {
         { CatHistory, "History",          &showHistory_   },
         { CatFile,    "File",             &showFile_      },
         { CatCamView, "Camera View",      &showCameraView_},
+        { CatSim,     "Simulation",       &showSimulation_},
     };
     for (auto& p : panels) {
         if (iconCell(icons::catIcon(p.cat), p.name, *p.flag))
@@ -484,6 +508,13 @@ void App::drawSpawnLogicWindow() {
     if (!showSpawnLogic_) return;
     if (ImGui::Begin("Spawn Logic", &showSpawnLogic_))
         drawSpawnLogicContent();
+    ImGui::End();
+}
+
+void App::drawSimulationWindow() {
+    if (!showSimulation_) return;
+    if (ImGui::Begin("Simulation", &showSimulation_))
+        drawSimulationContent();
     ImGui::End();
 }
 

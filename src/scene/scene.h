@@ -13,10 +13,11 @@
 //                     skybox path + exposure, light angles, editor camera,
 //                     scene cameras (id/name/tag/pose/fov + active id),
 //                     spawn markers (pose/model + condition/action node
-//                     graph), props, vegetation prototypes + instances,
-//                     block texture library + blocks. Asset paths are stored
-//                     relative to the scene file when possible. Unknown JSON
-//                     keys are ignored by older loaders.
+//                     graph), simulation flags, props, vegetation prototypes
+//                     + instances, block texture library + blocks. Asset
+//                     paths are stored relative to the scene file when
+//                     possible. Unknown JSON keys are ignored by older
+//                     loaders.
 //   12+N    u32       heightfield blob size (gridX * gridZ * sizeof(float))
 //   ...     blob      heights, row-major floats
 //   ...     u32       splat blob size (gridX * gridZ * 16 for v2,
