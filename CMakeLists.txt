@@ -126,6 +126,8 @@ set(SOURCES
     src/editor/ui_icons.cpp
     src/editor/ui_icons.h
     src/editor/ui_common.h
+    src/editor/tools.cpp
+    src/editor/tools.h
     src/scene/terrain.cpp
     src/scene/terrain.h
     src/scene/brush.cpp

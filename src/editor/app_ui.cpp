@@ -82,18 +82,20 @@ void App::renderImGui() {
 
 void App::selectCategory(int cat) {
     if (cat < 0 || cat >= CatCount) return;
-    // Leaving the vertex panel turns wireframe off (it was enabled for vertex
-    // picking); entering it forces wireframe on.
     if (activeCategory_ == CatVertex && cat != CatVertex) wireframe_ = false;
+    activeTool_->cancelDrag();
     activeCategory_ = cat;
-    if (cat == CatBrush)  toolMode_ = ToolPaint;
-    else if (cat == CatVertex) { toolMode_ = ToolVertex; wireframe_ = true; }
-    else if (cat == CatProps)  toolMode_ = ToolProp;
-    else if (cat == CatVegetation) {
-        toolMode_ = ToolPaint;
-        brush_.type = Terrain::BrushParams::Vegetation;
+    if (cat == CatBrush) {
+        toolMode_ = ToolPaint; activeTool_ = &terrainTool_;
+    } else if (cat == CatVertex) {
+        toolMode_ = ToolVertex; wireframe_ = true; activeTool_ = &vertexTool_;
+    } else if (cat == CatProps) {
+        toolMode_ = ToolProp; activeTool_ = &propTool_;
+    } else if (cat == CatVegetation) {
+        toolMode_ = ToolPaint; brush_.type = Terrain::BrushParams::Vegetation; activeTool_ = &terrainTool_;
+    } else if (cat == CatBuild) {
+        toolMode_ = ToolBuild; activeTool_ = &buildTool_;
     }
-    else if (cat == CatBuild) toolMode_ = ToolBuild;
 }
 
 void App::drawLeftPanel() {

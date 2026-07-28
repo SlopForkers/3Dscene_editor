@@ -315,40 +315,31 @@ void App::importModel(const std::string& path) {
 void App::handleInput(float dt) {
     ImGuiIO& io = ImGui::GetIO();
 
-    // Feed the HiDPI mouse scale to the sub-gizmos (they poll g_input).
     float dpiX = winWidth_  > 0 ? float(fbWidth_)  / float(winWidth_)  : 1.0f;
     float dpiY = winHeight_ > 0 ? float(fbHeight_) / float(winHeight_) : 1.0f;
     gizmo_.setDpiScale(dpiX, dpiY);
     vertexEditor_.setDpiScale(dpiX, dpiY);
 
-    // Global hotkeys must not fire while the user types into an ImGui text
-    // field (e.g. renaming a layer: "f" would toggle wireframe, Delete would
-    // delete the selected block, Esc would quit the app mid-edit).
     const bool typing = io.WantTextInput;
-
-    // Escape to quit
     if (!typing && g_input.keyPressed(GLFW_KEY_ESCAPE))
         glfwSetWindowShouldClose(window_, GLFW_TRUE);
 
     bool overUI = io.WantCaptureMouse;
 
-    // Camera orbit (right button) — start only when press is not over UI.
+    // Camera
     if (g_input.mousePressed(Input::Right))   orbiting_ = !overUI;
-    if (g_input.mouseReleased(Input::Right))   orbiting_ = false;
+    if (g_input.mouseReleased(Input::Right))  orbiting_ = false;
     if (orbiting_) {
-        float sens = 0.005f;
-        camera_.orbit(float(g_input.mouseDeltaX()) * sens,
-                      float(g_input.mouseDeltaY()) * sens);
+        camera_.orbit(float(g_input.mouseDeltaX()) * 0.005f,
+                      float(g_input.mouseDeltaY()) * 0.005f);
     }
-
-    // Pan (middle button)
     if (g_input.mousePressed(Input::Middle))  panning_ = !overUI;
-    if (g_input.mouseReleased(Input::Middle))  panning_ = false;
+    if (g_input.mouseReleased(Input::Middle)) panning_ = false;
     if (panning_) {
         camera_.pan(float(g_input.mouseDeltaX()), float(g_input.mouseDeltaY()));
     }
 
-    // WASD: move camera target in the XZ plane (skip while typing in a text field).
+    // WASD
     if (!io.WantTextInput) {
         float yaw = camera_.yaw();
         glm::vec3 fwdXZ(-std::sin(yaw), 0.0f, -std::cos(yaw));
@@ -363,375 +354,54 @@ void App::handleInput(float dt) {
             camera_.moveTarget(move * speed);
     }
 
-    // Scroll: modifiers change brush radius/strength, plain scroll zooms.
+    // Scroll
     if (g_input.scrollDelta() != 0.0f) {
         bool shift = g_input.keyDown(GLFW_KEY_LEFT_SHIFT) ||
                      g_input.keyDown(GLFW_KEY_RIGHT_SHIFT);
         bool ctrl  = g_input.keyDown(GLFW_KEY_LEFT_CONTROL) ||
                      g_input.keyDown(GLFW_KEY_RIGHT_CONTROL);
         if (shift) {
-            brush_.radius = std::clamp(
-                brush_.radius + g_input.scrollDelta() * 1.5f,
-                1.0f, terrain_.worldSize() * 0.4f);
+            brush_.radius = std::clamp(brush_.radius + g_input.scrollDelta() * 1.5f,
+                                       1.0f, terrain_.worldSize() * 0.4f);
             brushCursor_.setShape(brush_.radius);
         } else if (ctrl) {
-            brush_.strength = std::clamp(
-                brush_.strength + g_input.scrollDelta() * 0.05f,
-                0.01f, 5.0f);
+            brush_.strength = std::clamp(brush_.strength + g_input.scrollDelta() * 0.05f,
+                                         0.01f, 5.0f);
         } else if (!overUI) {
             camera_.zoom(-g_input.scrollDelta() * 0.1f);
         }
     }
 
-    // Tab cycles between terrain brush, prop, vertex-edit and build tools.
+    // Tab cycle
     if (!typing && g_input.keyPressed(GLFW_KEY_TAB)) {
         bool wasVertex = (toolMode_ == ToolVertex);
+        activeTool_->cancelDrag();
         toolMode_ = (toolMode_ == ToolPaint)  ? ToolProp   :
                     (toolMode_ == ToolProp)   ? ToolVertex :
                     (toolMode_ == ToolVertex) ? ToolBuild : ToolPaint;
-        painting_ = false;
-        // Abort any in-progress drag — its release would otherwise never be
-        // seen by the new tool and the stale drag would apply later.
-        buildDragging_ = false;
-        buildDragOnBlocks_ = false;
-        buildTexFace_ = -1;
-        gizmo_.cancelDrag();
-        vertexEditor_.cancelDrag();
         if (wasVertex && toolMode_ != ToolVertex) wireframe_ = false;
-        if (toolMode_ == ToolPaint)       activeCategory_ = CatBrush;
-        else if (toolMode_ == ToolProp)    activeCategory_ = CatProps;
-        else if (toolMode_ == ToolVertex) { activeCategory_ = CatVertex; wireframe_ = true; }
-        else if (toolMode_ == ToolBuild)   activeCategory_ = CatBuild;
+        if (toolMode_ == ToolPaint) {
+            activeTool_ = &terrainTool_; activeCategory_ = CatBrush;
+        } else if (toolMode_ == ToolProp) {
+            activeTool_ = &propTool_; activeCategory_ = CatProps;
+        } else if (toolMode_ == ToolVertex) {
+            activeTool_ = &vertexTool_; activeCategory_ = CatVertex; wireframe_ = true;
+        } else { // ToolBuild
+            activeTool_ = &buildTool_; activeCategory_ = CatBuild;
+        }
     }
 
-    // Left-button behaviour depends on the active tool.
-    if (toolMode_ == ToolPaint) {
-        // Painting (left button)
-        if (g_input.mousePressed(Input::Left)) {
-            painting_ = !overUI;
-        }
-        if (g_input.mouseReleased(Input::Left)) {
-            painting_ = false;
-        }
-        if (painting_) {
-            glm::vec3 origin, dir;
-            cursorRay(origin, dir);
-            glm::vec3 hit;
-            if (terrain_.raycast(origin, dir, hit)) {
-                if (brush_.type == Terrain::BrushParams::Vegetation) {
-                    bool erase = g_input.keyDown(GLFW_KEY_LEFT_CONTROL) ||
-                                 g_input.keyDown(GLFW_KEY_RIGHT_CONTROL);
-                    // Density has its own sane range; don't mutate the shared
-                    // brush strength (it belongs to the sculpt brushes too).
-                    float s = std::clamp(brush_.strength, 0.05f, 2.0f);
-                    float density = continuousStroke_ ? s * dt * 60.0f : s;
-                    details_.paint(terrain_, hit, brush_.radius, density, erase);
-                } else {
-                    float amount = continuousStroke_ ? brush_.strength * dt * 60.0f
-                                                      : brush_.strength;
-                    Terrain::BrushParams step = brush_;
-                    step.strength = amount;
-                    bool changed = terrain_.applyBrush(step, hit);
-                    // Keep painted details and foundation blocks glued to the
-                    // edited heightfield.
-                    if (changed) {
-                        details_.reproject(terrain_, hit, brush_.radius * 1.5f);
-                        build_.reproject(terrain_, hit, brush_.radius * 1.5f);
-                    }
-                }
-            }
-        }
-    } else if (toolMode_ == ToolProp) {
-        // Prop tool.
-        Prop* sel = props_.selected();
-
-        // The gizmo takes priority when a prop is selected.
-        bool gizmoConsumed = false;
-        if (sel) {
-            Gizmo::Transform cur{ sel->position, sel->rotationEuler, sel->scale };
-            Gizmo::Transform next;
-            if (gizmo_.handleInput(camera_, sel->position, cur, next, io)) {
-                gizmoConsumed = true;
-                if (gizmo_.dragging()) {
-                    sel->position       = next.position;
-                    sel->rotationEuler  = next.rotationEuler;
-                    sel->scale          = next.scale;
-                }
-            }
-        }
-
-        // If the gizmo did not consume the input, do prop picking on press.
-        if (!gizmoConsumed && g_input.mousePressed(Input::Left) && !overUI) {
-            glm::vec3 origin, dir;
-            cursorRay(origin, dir);
-            int picked = props_.pick(origin, dir);
-            if (picked >= 0) {
-                props_.select(picked);
-            } else {
-                // Click on empty space deselects.
-                props_.select(-1);
-            }
-        }
-    } else if (toolMode_ == ToolVertex) {
-        // Vertex editing — only active in wireframe.
-        if (wireframe_) {
-            bool wasDragging = vertexEditor_.dragging();
-            vertexEditor_.handleInput(camera_, terrain_, brush_.radius,
-                                      brush_.falloff, io, overUI);
-            // Vertex edits change the heightfield: keep details and sunk
-            // foundation blocks glued to it (same as brush edits).
-            if (vertexEditor_.dragging() || wasDragging) {
-                glm::vec3 c = vertexEditor_.selectionCenter();
-                details_.reproject(terrain_, c, brush_.radius * 1.5f);
-                build_.reproject(terrain_, c, brush_.radius * 1.5f);
-            }
-        } else if (g_input.mousePressed(Input::Left) && !overUI) {
-            // Re-enable wireframe on click so the user can resume editing.
-            wireframe_ = true;
-        }
-    } else if (toolMode_ == ToolBuild) {
+    // Cursor ray → terrain hit for overlay text.
+    {
         glm::vec3 origin, dir;
         cursorRay(origin, dir);
-
-        bool ctrl = g_input.keyDown(GLFW_KEY_LEFT_CONTROL) ||
-                    g_input.keyDown(GLFW_KEY_RIGHT_CONTROL);
-        float gs = build_.gridStep();
-        BuildSystem::Mode bmode = build_.mode();
-
-        // Hotkeys: Z = foundation, X = wall, C = texture.
-        if (!typing && g_input.keyPressed(GLFW_KEY_Z)) build_.setMode(BuildSystem::ModeFoundation);
-        if (!typing && g_input.keyPressed(GLFW_KEY_X)) build_.setMode(BuildSystem::ModeWall);
-        if (!typing && g_input.keyPressed(GLFW_KEY_C)) build_.setMode(BuildSystem::ModeTexture);
-
-        // R cycles the wall edge rotation (+X -> +Z -> -X -> -Z).
-        if (!typing && bmode == BuildSystem::ModeWall && g_input.keyPressed(GLFW_KEY_R))
-            build_.rotateWallEdge();
-
-        // Ghost preview (only when not dragging).
-        if (!buildDragging_) {
-            hasGhost_ = false;
-            if (!overUI) {
-                glm::vec3 hp, hn;
-                int id = build_.pick(origin, dir, hp, hn);
-                if (id >= 0) {
-                    const BuildSystem::Block* b = build_.findBlock(id);
-                    if (b) {
-                        if (bmode == BuildSystem::ModeTexture) {
-                            // Texture mode: highlight the hovered block + face.
-                            selectedBlockId_ = id;
-                            selectedBlockFace_ = BuildSystem::faceFromNormal(hn);
-                            // No placement ghost — we paint on click instead.
-                        } else if (bmode == BuildSystem::ModeWall && hn.y > 0.5f) {
-                            // Wall ghost: position on the block edge selected by
-                            // the current wall rotation (R cycles 0..3).
-                            float fixed; bool alongX;
-                            build_.wallLineParamsFor(*b, fixed, alongX);
-                            ghostSize_ = alongX
-                                ? glm::vec3(build_.blockWidth(), build_.blockHeight(), build_.wallThickness())
-                                : glm::vec3(build_.wallThickness(), build_.blockHeight(), build_.blockWidth());
-                            // Snap only the along-axis centre; the fixed edge
-                            // coordinate already carries the rim offset.
-                            float ex = alongX ? b->position.x : fixed;
-                            float ez = alongX ? fixed : b->position.z;
-                            if (alongX) ex = std::round(ex / gs) * gs;
-                            else        ez = std::round(ez / gs) * gs;
-                            ghostCenter_ = glm::vec3(ex, b->max().y + build_.blockHeight() * 0.5f, ez);
-                            ghostType_ = BuildSystem::Wall;
-                            hasGhost_ = true;
-                        } else if (bmode == BuildSystem::ModeFoundation && hn.y <= 0.5f) {
-                            // Foundation ghost on side face.
-                            glm::vec3 gc, gsz;
-                            BuildSystem::BlockType gt;
-                            if (build_.computePlacement(terrain_, origin, dir, gc, gsz, gt)) {
-                                ghostCenter_ = gc; ghostSize_ = gsz; ghostType_ = gt;
-                                hasGhost_ = true;
-                            }
-                        }
-                    }
-                } else if (bmode == BuildSystem::ModeFoundation) {
-                    // Foundation ghost on terrain.
-                    glm::vec3 tHit;
-                    if (terrain_.raycast(origin, dir, tHit)) {
-                        float gx = std::round(tHit.x / gs) * gs;
-                        float gz = std::round(tHit.z / gs) * gs;
-                        ghostSize_ = glm::vec3(build_.blockWidth(), build_.blockHeight(), build_.blockWidth());
-                        float th = terrain_.heightAtWorld(gx, gz);
-                        float topY = th + build_.blockHeight() * (1.0f - build_.sunkDepth());
-                        ghostCenter_ = glm::vec3(gx, topY - build_.blockHeight() * 0.5f, gz);
-                        ghostType_ = BuildSystem::Foundation;
-                        hasGhost_ = true;
-                    }
-                }
-            }
-        } else {
-            hasGhost_ = false;
-        }
-
-        // Press: start drag or single-place. The erase flag is captured NOW
-        // (at press) so a mid-drag Ctrl change can't flip the operation.
-        if (g_input.mousePressed(Input::Left) && !overUI) {
-            glm::vec3 hp, hn;
-            int id = build_.pick(origin, dir, hp, hn);
-            buildDragErase_ = ctrl;
-            if (id >= 0) {
-                const BuildSystem::Block* b = build_.findBlock(id);
-                if (ctrl) {
-                    if (bmode == BuildSystem::ModeTexture) {
-                        // Ctrl+click in texture mode: clear face texture.
-                        build_.clearBlockFaceTexture(id);
-                        if (selectedBlockId_ == id) selectedBlockFace_ = -1;
-                    } else {
-                        build_.removeBlock(id);
-                        if (selectedBlockId_ == id) { selectedBlockId_ = -1; selectedBlockFace_ = -1; }
-                    }
-                } else if (b) {
-                    if (bmode == BuildSystem::ModeTexture) {
-                        // Record the press; paint happens on release so a click
-                        // paints exactly one block and a drag paints a region.
-                        int face = BuildSystem::faceFromNormal(hn);
-                        bool horizontal = (face == BuildSystem::FacePY ||
-                                          face == BuildSystem::FaceNY);
-                        buildTexFace_ = face;
-                        buildTexLine_ = !horizontal;
-                        buildTexPressBlock_ = id;
-                        buildTexPressFace_ = face;
-                        buildTexPressMX_ = g_input.mouseX();
-                        buildTexPressMY_ = g_input.mouseY();
-                        buildDragging_ = true;
-                        buildDragOnBlocks_ = !horizontal;  // line uses wall-style preview
-                        if (horizontal) {
-                            buildDragStart_ = glm::vec2(std::round(hp.x / gs) * gs,
-                                                        std::round(hp.z / gs) * gs);
-                        } else {
-                            buildDragAlongX_ = (face == BuildSystem::FacePZ ||
-                                                face == BuildSystem::FaceNZ);
-                            float fixed = buildDragAlongX_
-                                ? std::round(b->position.z / gs) * gs
-                                : std::round(b->position.x / gs) * gs;
-                            buildDragFixed_ = fixed;
-                            buildDragBaseY_ = b->max().y;
-                            float startC = buildDragAlongX_
-                                ? std::round(hp.x / gs) * gs
-                                : std::round(hp.z / gs) * gs;
-                            buildDragStart_ = buildDragAlongX_
-                                ? glm::vec2(startC, fixed)
-                                : glm::vec2(fixed, startC);
-                        }
-                        selectedBlockId_ = id;
-                        selectedBlockFace_ = face;
-                    } else if (bmode == BuildSystem::ModeWall && hn.y > 0.5f) {
-                        // Start wall LINE drag on block top. The wall sits on
-                        // the edge selected by the current wall rotation (R).
-                        float fixed; bool alongX;
-                        build_.wallLineParamsFor(*b, fixed, alongX);
-                        buildDragging_ = true;
-                        buildDragOnBlocks_ = true;
-                        buildDragBaseY_ = b->max().y;
-                        buildDragAlongX_ = alongX;
-                        buildDragFixed_ = fixed;
-                        buildDragStart_ = alongX
-                            ? glm::vec2(std::round(hp.x / gs) * gs, fixed)
-                            : glm::vec2(fixed, std::round(hp.z / gs) * gs);
-                    } else if (bmode == BuildSystem::ModeFoundation && hn.y <= 0.5f) {
-                        // Single foundation on side face.
-                        glm::vec3 gc, gsz;
-                        BuildSystem::BlockType gt;
-                        if (build_.computePlacement(terrain_, origin, dir, gc, gsz, gt)) {
-                            int nid = build_.placeBlock(gc, gsz, gt, build_.color());
-                            selectedBlockId_ = nid;
-                        }
-                    }
-                }
-            } else if (bmode == BuildSystem::ModeFoundation ||
-                       (ctrl && bmode != BuildSystem::ModeTexture)) {
-                // Terrain: start a foundation rect drag — or, with Ctrl held,
-                // an erase drag (available in wall mode too, as the help
-                // overlay promises).
-                glm::vec3 tHit;
-                if (terrain_.raycast(origin, dir, tHit)) {
-                    buildDragging_ = true;
-                    buildDragOnBlocks_ = false;
-                    buildDragStart_ = glm::vec2(std::round(tHit.x / gs) * gs,
-                                                std::round(tHit.z / gs) * gs);
-                }
-            }
-        }
-        if (g_input.mouseReleased(Input::Left)) {
-            if (buildDragging_ && !overUI) {
-                glm::vec3 tHit;
-                if (terrain_.raycast(origin, dir, tHit)) {
-                    float gx = std::round(tHit.x / gs) * gs;
-                    float gz = std::round(tHit.z / gs) * gs;
-                    if (bmode == BuildSystem::ModeTexture) {
-                        // Distinguish click from drag by pixel movement so a
-                        // click paints exactly one block (the press-time pick)
-                        // and only a real drag stretches across a region.
-                        float pdx = (float)(g_input.mouseX() - buildTexPressMX_);
-                        float pdy = (float)(g_input.mouseY() - buildTexPressMY_);
-                        bool moved = (pdx * pdx + pdy * pdy) > 25.0f; // ~5px
-                        if (!moved) {
-                            // Click: paint the single block captured at press.
-                            if (buildTexPressBlock_ >= 0 && buildTexPressFace_ >= 0)
-                                build_.paintCurrentTexture(buildTexPressBlock_,
-                                                           buildTexPressFace_);
-                        } else if (buildTexLine_) {
-                            float startC = buildDragAlongX_ ? buildDragStart_.x
-                                                             : buildDragStart_.y;
-                            float curC   = buildDragAlongX_ ? gx : gz;
-                            build_.applyTextureToLine(startC, curC,
-                                                      buildDragFixed_,
-                                                      buildDragAlongX_,
-                                                      buildTexFace_);
-                        } else {
-                            build_.applyTextureToRect(buildDragStart_.x,
-                                                      buildDragStart_.y, gx, gz,
-                                                      buildTexFace_);
-                        }
-                    } else if (buildDragErase_) {
-                        int n = build_.eraseRect(buildDragStart_.x, buildDragStart_.y,
-                                                 gx, gz);
-                        if (n > 0) { selectedBlockId_ = -1; selectedBlockFace_ = -1; }
-                    } else if (buildDragOnBlocks_) {
-                        // Wall line: project cursor onto the chosen axis.
-                        float startC = buildDragAlongX_ ? buildDragStart_.x
-                                                         : buildDragStart_.y;
-                        float curC = buildDragAlongX_ ? gx : gz;
-                        build_.fillWallLine(startC, curC, buildDragFixed_,
-                                             buildDragBaseY_, buildDragAlongX_);
-                    } else {
-                        build_.fillRect(terrain_,
-                                        buildDragStart_.x, buildDragStart_.y,
-                                        gx, gz, BuildSystem::Foundation);
-                    }
-                }
-            }
-            buildDragging_ = false;
-            buildDragOnBlocks_ = false;
-            buildTexFace_ = -1;
-        }
-
-        if (!typing && g_input.keyPressed(GLFW_KEY_DELETE) && selectedBlockId_ >= 0) {
-            build_.removeBlock(selectedBlockId_);
-            selectedBlockId_ = -1;
-            selectedBlockFace_ = -1;
-        }
-
-        // Right-click: select a block and remember the picked face (used by the
-        // face-texture UI).
-        if (g_input.mousePressed(Input::Right) && !overUI) {
-            glm::vec3 hp, hn;
-            int id = build_.pick(origin, dir, hp, hn);
-            if (id >= 0) {
-                selectedBlockId_ = id;
-                selectedBlockFace_ = BuildSystem::faceFromNormal(hn);
-            } else {
-                selectedBlockId_ = -1;
-                selectedBlockFace_ = -1;
-            }
-        }
+        brushHasHit_ = terrain_.raycast(origin, dir, brushHit_);
     }
 
-    // Keyboard shortcuts for brush types (all suppressed while typing).
+    // Delegate to the active tool.
+    activeTool_->handleInput(*this, dt, io, overUI, typing);
+
+    // Global hotkeys (suppressed while typing).
     if (!typing) {
         if (g_input.keyPressed(GLFW_KEY_1)) brush_.type = Terrain::BrushParams::Raise;
         if (g_input.keyPressed(GLFW_KEY_2)) brush_.type = Terrain::BrushParams::Lower;
@@ -744,13 +414,11 @@ void App::handleInput(float dt) {
         if (g_input.keyPressed(GLFW_KEY_F)) wireframe_ = !wireframe_;
         if (g_input.keyPressed(GLFW_KEY_H)) showHelp_ = !showHelp_;
 
-        // Gizmo mode shortcuts (only relevant in prop tool).
         if (toolMode_ == ToolProp) {
             if (g_input.keyPressed(GLFW_KEY_T)) gizmo_.setMode(Gizmo::Translate);
             if (g_input.keyPressed(GLFW_KEY_R)) gizmo_.setMode(Gizmo::Rotate);
             if (g_input.keyPressed(GLFW_KEY_S)) gizmo_.setMode(Gizmo::Scale);
         }
-        // Vertex-edit drag-mode shortcuts.
         if (toolMode_ == ToolVertex) {
             if (g_input.keyPressed(GLFW_KEY_V)) vertexEditor_.setDragMode(VertexEditor::FreeXYZ);
             if (g_input.keyPressed(GLFW_KEY_B)) vertexEditor_.setDragMode(VertexEditor::Vertical);
@@ -821,7 +489,7 @@ void App::renderScene() {
         glEnable(GL_DEPTH_TEST);
     }
     // Drag preview (build tool only, while dragging).
-    if (toolMode_ == ToolBuild && buildDragging_) {
+    if (toolMode_ == ToolBuild && buildTool_.dragging()) {
         glm::vec3 ro, rd;
         cursorRay(ro, rd);
         glm::vec3 tHit;
@@ -834,7 +502,7 @@ void App::renderScene() {
             glm::vec3 rectCol;
             if (ctrl) rectCol = glm::vec3(1.0f, 0.3f, 0.2f);
             else if (build_.mode() == BuildSystem::ModeTexture) rectCol = glm::vec3(0.8f, 0.4f, 1.0f);
-            else if (buildDragOnBlocks_) rectCol = glm::vec3(0.3f, 0.8f, 1.0f);
+            else if (buildTool_.buildDragOnBlocks_) rectCol = glm::vec3(0.3f, 0.8f, 1.0f);
             else rectCol = glm::vec3(1.0f, 0.95f, 0.3f);
 
             // Persistent VAO/VBO — only the vertex data is re-uploaded.
@@ -846,29 +514,29 @@ void App::renderScene() {
             lineShader_.setFloat("uAlpha", 1.0f);
             glDisable(GL_DEPTH_TEST);
 
-            if (buildDragOnBlocks_) {
+            if (buildTool_.buildDragOnBlocks_) {
                 // Wall line drag: draw a single line along the chosen axis at
                 // the fixed edge coordinate.
-                float startC = buildDragAlongX_ ? buildDragStart_.x
-                                                 : buildDragStart_.y;
-                float curC   = buildDragAlongX_ ? gx : gz;
-                float y = buildDragBaseY_ + 0.05f;
+                float startC = buildTool_.buildDragAlongX_ ? buildTool_.buildDragStart_.x
+                                                  : buildTool_.buildDragStart_.y;
+                float curC   = buildTool_.buildDragAlongX_ ? gx : gz;
+                float y = buildTool_.buildDragBaseY_ + 0.05f;
                 float pts[2][3];
-                if (buildDragAlongX_) {
-                    pts[0][0] = startC; pts[0][1] = y; pts[0][2] = buildDragFixed_;
-                    pts[1][0] = curC;   pts[1][1] = y; pts[1][2] = buildDragFixed_;
+                if (buildTool_.buildDragAlongX_) {
+                    pts[0][0] = startC; pts[0][1] = y; pts[0][2] = buildTool_.buildDragFixed_;
+                    pts[1][0] = curC;   pts[1][1] = y; pts[1][2] = buildTool_.buildDragFixed_;
                 } else {
-                    pts[0][0] = buildDragFixed_; pts[0][1] = y; pts[0][2] = startC;
-                    pts[1][0] = buildDragFixed_; pts[1][1] = y; pts[1][2] = curC;
+                    pts[0][0] = buildTool_.buildDragFixed_; pts[0][1] = y; pts[0][2] = startC;
+                    pts[1][0] = buildTool_.buildDragFixed_; pts[1][1] = y; pts[1][2] = curC;
                 }
                 glBufferData(GL_ARRAY_BUFFER, sizeof(pts), pts, GL_DYNAMIC_DRAW);
                 glDrawArrays(GL_LINES, 0, 2);
             } else {
                 // Foundation rectangle drag.
-                float x0 = std::min(buildDragStart_.x, gx) - gs * 0.5f;
-                float x1 = std::max(buildDragStart_.x, gx) + gs * 0.5f;
-                float z0 = std::min(buildDragStart_.y, gz) - gs * 0.5f;
-                float z1 = std::max(buildDragStart_.y, gz) + gs * 0.5f;
+                float x0 = std::min(buildTool_.buildDragStart_.x, gx) - gs * 0.5f;
+                float x1 = std::max(buildTool_.buildDragStart_.x, gx) + gs * 0.5f;
+                float z0 = std::min(buildTool_.buildDragStart_.y, gz) - gs * 0.5f;
+                float z1 = std::max(buildTool_.buildDragStart_.y, gz) + gs * 0.5f;
                 auto yAt = [&](float x, float z) {
                     return terrain_.heightAtWorld(x, z) + 0.5f;
                 };
