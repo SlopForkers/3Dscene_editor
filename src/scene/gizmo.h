@@ -1,5 +1,5 @@
 #pragma once
-#include <glad/gl.h>
+#include "gl_resource.h"
 #include <glm/glm.hpp>
 
 class Camera;
@@ -58,9 +58,12 @@ private:
     float     startT_        = 0.0f;             // signed distance along axis
     float     startAngle_    = 0.0f;             // for rotate
 
-    GLuint vaoLine_ = 0, vboLine_ = 0;   // unit line (0,0,0)->(1,0,0)
-    GLuint vaoRing_ = 0, vboRing_ = 0;   // unit ring in XY plane
-    GLuint vaoCube_ = 0, vboCube_ = 0;   // unit cube wireframe [0,1]^3
+    GlVertexArray vaoLine_;
+    GlBuffer      vboLine_;
+    GlVertexArray vaoRing_;
+    GlBuffer      vboRing_;
+    GlVertexArray vaoCube_;
+    GlBuffer      vboCube_;
 
     float pixelSize_ = 90.0f;   // gizmo on-screen size in pixels
 

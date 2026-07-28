@@ -15,8 +15,8 @@ Gizmo::~Gizmo() { destroy(); }
 void Gizmo::create() {
     // Unit line along +X.
     float lineVerts[] = { 0,0,0, 1,0,0 };
-    glGenVertexArrays(1, &vaoLine_);
-    glGenBuffers(1, &vboLine_);
+    vaoLine_.create();
+    vboLine_.create();
     glBindVertexArray(vaoLine_);
     glBindBuffer(GL_ARRAY_BUFFER, vboLine_);
     glBufferData(GL_ARRAY_BUFFER, sizeof(lineVerts), lineVerts, GL_STATIC_DRAW);
@@ -30,8 +30,8 @@ void Gizmo::create() {
         float a = float(i) / 64.0f * 2.0f * PI_F;
         ring[i] = glm::vec3(std::cos(a), std::sin(a), 0.0f);
     }
-    glGenVertexArrays(1, &vaoRing_);
-    glGenBuffers(1, &vboRing_);
+    vaoRing_.create();
+    vboRing_.create();
     glBindVertexArray(vaoRing_);
     glBindBuffer(GL_ARRAY_BUFFER, vboRing_);
     glBufferData(GL_ARRAY_BUFFER, ring.size() * sizeof(glm::vec3), ring.data(), GL_STATIC_DRAW);
@@ -45,8 +45,8 @@ void Gizmo::create() {
         {0,0,1},{1,0,1}, {1,0,1},{1,1,1}, {1,1,1},{0,1,1}, {0,1,1},{0,0,1},
         {0,0,0},{0,0,1}, {1,0,0},{1,0,1}, {1,1,0},{1,1,1}, {0,1,0},{0,1,1},
     };
-    glGenVertexArrays(1, &vaoCube_);
-    glGenBuffers(1, &vboCube_);
+    vaoCube_.create();
+    vboCube_.create();
     glBindVertexArray(vaoCube_);
     glBindBuffer(GL_ARRAY_BUFFER, vboCube_);
     glBufferData(GL_ARRAY_BUFFER, sizeof(cube), cube, GL_STATIC_DRAW);
@@ -56,12 +56,12 @@ void Gizmo::create() {
 }
 
 void Gizmo::destroy() {
-    if (vaoLine_) { glDeleteVertexArrays(1, &vaoLine_); vaoLine_ = 0; }
-    if (vboLine_) { glDeleteBuffers(1, &vboLine_); vboLine_ = 0; }
-    if (vaoRing_) { glDeleteVertexArrays(1, &vaoRing_); vaoRing_ = 0; }
-    if (vboRing_) { glDeleteBuffers(1, &vboRing_); vboRing_ = 0; }
-    if (vaoCube_) { glDeleteVertexArrays(1, &vaoCube_); vaoCube_ = 0; }
-    if (vboCube_) { glDeleteBuffers(1, &vboCube_); vboCube_ = 0; }
+    vaoLine_.destroy();
+    vboLine_.destroy();
+    vaoRing_.destroy();
+    vboRing_.destroy();
+    vaoCube_.destroy();
+    vboCube_.destroy();
 }
 
 float Gizmo::worldSize(const Camera& cam, const glm::vec3& pos) const {

@@ -37,18 +37,17 @@ VertexEditor::~VertexEditor() { destroy(); }
 void VertexEditor::create() {
     // Unit line (0,0,0)->(1,0,0) for gizmo axes.
     static const float lineVerts[2][3] = { {0,0,0}, {1,0,0} };
-    glGenVertexArrays(1, &vaoLine_);
-    glGenBuffers(1, &vboLine_);
+    vaoLine_.create();
+    vboLine_.create();
     glBindVertexArray(vaoLine_);
     glBindBuffer(GL_ARRAY_BUFFER, vboLine_);
     glBufferData(GL_ARRAY_BUFFER, sizeof(lineVerts), lineVerts, GL_STATIC_DRAW);
     glEnableVertexAttribArray(0);
-    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 3 * sizeof(float), (void*)0);
+    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 0, (void*)0);
     glBindVertexArray(0);
 
-    // Dynamic point VBO for selection markers (updated each frame).
-    glGenVertexArrays(1, &vaoPoint_);
-    glGenBuffers(1, &vboPoint_);
+    vaoPoint_.create();
+    vboPoint_.create();
     glBindVertexArray(vaoPoint_);
     glBindBuffer(GL_ARRAY_BUFFER, vboPoint_);
     glBufferData(GL_ARRAY_BUFFER, sizeof(glm::vec3) * 16, nullptr, GL_DYNAMIC_DRAW);
@@ -58,10 +57,10 @@ void VertexEditor::create() {
 }
 
 void VertexEditor::destroy() {
-    if (vaoLine_) { glDeleteVertexArrays(1, &vaoLine_); vaoLine_ = 0; }
-    if (vboLine_) { glDeleteBuffers(1, &vboLine_); vboLine_ = 0; }
-    if (vaoPoint_) { glDeleteVertexArrays(1, &vaoPoint_); vaoPoint_ = 0; }
-    if (vboPoint_) { glDeleteBuffers(1, &vboPoint_); vboPoint_ = 0; }
+    vaoLine_.destroy();
+    vboLine_.destroy();
+    vaoPoint_.destroy();
+    vboPoint_.destroy();
 }
 
 void VertexEditor::clearSelection() {

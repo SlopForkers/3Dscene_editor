@@ -22,11 +22,11 @@ float randRange(float lo, float hi) {
 DetailSystem::~DetailSystem() { destroy(); }
 
 void DetailSystem::create() {
-    glGenBuffers(1, &instanceVbo_);
+    instanceVbo_.create();
 }
 
 void DetailSystem::destroy() {
-    if (instanceVbo_) { glDeleteBuffers(1, &instanceVbo_); instanceVbo_ = 0; }
+    instanceVbo_.destroy();
     instances_.clear();
     prototypes_.clear();
 }

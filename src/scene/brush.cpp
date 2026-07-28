@@ -1,12 +1,13 @@
 #include "brush.h"
+#include <glad/gl.h>
 #include <cmath>
 #include <vector>
 
 BrushCursor::~BrushCursor() { destroy(); }
 
 void BrushCursor::create() {
-    glGenVertexArrays(1, &vao_);
-    glGenBuffers(1, &vbo_);
+    vao_.create();
+    vbo_.create();
     glBindVertexArray(vao_);
     glBindBuffer(GL_ARRAY_BUFFER, vbo_);
     glBufferData(GL_ARRAY_BUFFER, 0, nullptr, GL_DYNAMIC_DRAW);
@@ -17,8 +18,8 @@ void BrushCursor::create() {
 }
 
 void BrushCursor::destroy() {
-    if (vao_) { glDeleteVertexArrays(1, &vao_); vao_ = 0; }
-    if (vbo_) { glDeleteBuffers(1, &vbo_); vbo_ = 0; }
+    vao_.destroy();
+    vbo_.destroy();
 }
 
 void BrushCursor::setShape(float radius, int segments) {

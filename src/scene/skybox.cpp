@@ -50,8 +50,8 @@ bool Skybox::create() {
     destroy();   // safe no-op on first call; avoids leaking on re-create
 
     // Skybox cube.
-    glGenVertexArrays(1, &vao_);
-    glGenBuffers(1, &vbo_);
+    vao_.create();
+    vbo_.create();
     glBindVertexArray(vao_);
     glBindBuffer(GL_ARRAY_BUFFER, vbo_);
     glBufferData(GL_ARRAY_BUFFER, sizeof(kCubeVerts), kCubeVerts, GL_STATIC_DRAW);
@@ -60,8 +60,8 @@ bool Skybox::create() {
     glBindVertexArray(0);
 
     // Fullscreen quad for equirect -> cubemap conversion.
-    glGenVertexArrays(1, &quadVao_);
-    glGenBuffers(1, &quadVbo_);
+    quadVao_.create();
+    quadVbo_.create();
     glBindVertexArray(quadVao_);
     glBindBuffer(GL_ARRAY_BUFFER, quadVbo_);
     glBufferData(GL_ARRAY_BUFFER, sizeof(kQuadVerts), kQuadVerts, GL_STATIC_DRAW);
@@ -78,16 +78,16 @@ bool Skybox::create() {
 }
 
 void Skybox::destroy() {
-    if (vao_) { glDeleteVertexArrays(1, &vao_); vao_ = 0; }
-    if (vbo_) { glDeleteBuffers(1, &vbo_); vbo_ = 0; }
-    if (quadVao_) { glDeleteVertexArrays(1, &quadVao_); quadVao_ = 0; }
-    if (quadVbo_) { glDeleteBuffers(1, &quadVbo_); quadVbo_ = 0; }
-    if (tex_) { glDeleteTextures(1, &tex_); tex_ = 0; }
+    vao_.destroy();
+    vbo_.destroy();
+    quadVao_.destroy();
+    quadVbo_.destroy();
+    tex_.destroy();
 }
 
 void Skybox::allocateCubemap(int size) {
-    if (tex_) { glDeleteTextures(1, &tex_); tex_ = 0; }
-    glGenTextures(1, &tex_);
+    tex_.destroy();
+    tex_.create();
     glBindTexture(GL_TEXTURE_CUBE_MAP, tex_);
     for (int i = 0; i < 6; ++i) {
         glTexImage2D(GL_TEXTURE_CUBE_MAP_POSITIVE_X + i, 0, GL_RGB16F,

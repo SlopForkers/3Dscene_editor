@@ -1,5 +1,5 @@
 #pragma once
-#include <glad/gl.h>
+#include "gl_resource.h"
 #include <glm/glm.hpp>
 #include <memory>
 #include <string>
@@ -72,7 +72,7 @@ private:
     std::vector<Instance>  instances_;
     int  activePrototype_ = -1;
 
-    mutable GLuint instanceVbo_ = 0;
+    mutable GlBuffer instanceVbo_;
     mutable std::vector<glm::mat4> instanceMatrices_;
 
     glm::mat4 instanceMatrix(const Instance& inst, const Prototype& proto) const;

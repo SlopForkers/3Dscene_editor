@@ -50,9 +50,9 @@ void BuildSystem::initCubeMesh() {
             verts[i + 5] = CUBE_NRM[f][2];
         }
     }
-    glGenVertexArrays(1, &vao_);
-    glGenBuffers(1, &vbo_);
-    glGenBuffers(1, &ibo_);
+    vao_.create();
+    vbo_.create();
+    ibo_.create();
     glBindVertexArray(vao_);
     glBindBuffer(GL_ARRAY_BUFFER, vbo_);
     glBufferData(GL_ARRAY_BUFFER, sizeof(verts), verts, GL_STATIC_DRAW);
@@ -83,8 +83,8 @@ static const float CUBE_EDGES[24][3] = {
 };
 
 void BuildSystem::initWireCube() {
-    glGenVertexArrays(1, &wireVao_);
-    glGenBuffers(1, &wireVbo_);
+    wireVao_.create();
+    wireVbo_.create();
     glBindVertexArray(wireVao_);
     glBindBuffer(GL_ARRAY_BUFFER, wireVbo_);
     glBufferData(GL_ARRAY_BUFFER, sizeof(CUBE_EDGES), CUBE_EDGES, GL_STATIC_DRAW);
@@ -96,7 +96,7 @@ void BuildSystem::initWireCube() {
 void BuildSystem::initDefaultTex() {
     // 1x1 opaque white so the sampler is always bound.
     unsigned char px[4] = { 255, 255, 255, 255 };
-    glGenTextures(1, &defaultTex_);
+    defaultTex_.create();
     glBindTexture(GL_TEXTURE_2D, defaultTex_);
     glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
     glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, 1, 1, 0, GL_RGBA, GL_UNSIGNED_BYTE, px);
@@ -114,12 +114,12 @@ void BuildSystem::create() {
 }
 
 void BuildSystem::destroy() {
-    if (vao_)     { glDeleteVertexArrays(1, &vao_);     vao_ = 0; }
-    if (vbo_)     { glDeleteBuffers(1, &vbo_);          vbo_ = 0; }
-    if (ibo_)     { glDeleteBuffers(1, &ibo_);          ibo_ = 0; }
-    if (wireVao_) { glDeleteVertexArrays(1, &wireVao_); wireVao_ = 0; }
-    if (wireVbo_) { glDeleteBuffers(1, &wireVbo_);      wireVbo_ = 0; }
-    if (defaultTex_) { glDeleteTextures(1, &defaultTex_); defaultTex_ = 0; }
+    vao_.destroy();
+    vbo_.destroy();
+    ibo_.destroy();
+    wireVao_.destroy();
+    wireVbo_.destroy();
+    defaultTex_.destroy();
     for (const auto& t : blockTextures_)
         if (t.glId) glDeleteTextures(1, &t.glId);
     blockTextures_.clear();

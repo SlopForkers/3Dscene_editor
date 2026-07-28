@@ -1,5 +1,5 @@
 #pragma once
-#include <glad/gl.h>
+#include "gl_resource.h"
 #include <glm/glm.hpp>
 #include <cmath>
 #include <string>
@@ -213,12 +213,15 @@ private:
     int   defaultTexMode_ = 0;   // 0 = Stretch, 1 = Tile
 
     // Shared cube mesh (positions + normals, indexed).
-    GLuint vao_ = 0, vbo_ = 0, ibo_ = 0;
+    GlVertexArray vao_;
+    GlBuffer      vbo_;
+    GlBuffer      ibo_;
     int    indexCount_ = 0;
     // Edge-only cube for wireframe / outlines.
-    GLuint wireVao_ = 0, wireVbo_ = 0;
+    GlVertexArray wireVao_;
+    GlBuffer      wireVbo_;
     // 1x1 white fallback so the sampler is always bound.
-    GLuint defaultTex_ = 0;
+    GlTexture     defaultTex_;
     // Shared texture library referenced by Block::textureIdx.
     std::vector<BlockTexture> blockTextures_;
 

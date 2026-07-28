@@ -1,5 +1,5 @@
 #pragma once
-#include <glad/gl.h>
+#include "gl_resource.h"
 #include <glm/glm.hpp>
 #include <string>
 #include <vector>
@@ -33,15 +33,17 @@ public:
     // and restoring GL_LESS afterwards; the shader writes depth = w (far).
     void draw(Shader& shader, const glm::mat4& viewProj, float exposure);
 
-    GLuint texture() const { return tex_; }
-    bool valid() const { return tex_ != 0; }
+    GLuint texture() const { return tex_.id(); }
+    bool valid() const { return tex_.id() != 0; }
     bool isDefault() const { return !imported_; }
     const std::string& importedPath() const { return importedPath_; }
 
 private:
-    GLuint vao_ = 0, vbo_ = 0;     // skybox cube
-    GLuint quadVao_ = 0, quadVbo_ = 0; // fullscreen quad for equirect conversion
-    GLuint tex_ = 0;
+    GlVertexArray vao_;
+    GlBuffer      vbo_;
+    GlVertexArray quadVao_;
+    GlBuffer      quadVbo_;
+    GlTexture     tex_;
     int faceSize_ = 256;
     bool imported_ = false;        // true after a successful equirect import
     std::string importedPath_;

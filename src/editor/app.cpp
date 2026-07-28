@@ -128,8 +128,8 @@ bool App::initOpenGL() {
             {0,0,1},{1,0,1}, {1,0,1},{1,1,1}, {1,1,1},{0,1,1}, {0,1,1},{0,0,1},
             {0,0,0},{0,0,1}, {1,0,0},{1,0,1}, {1,1,0},{1,1,1}, {0,1,0},{0,1,1},
         };
-        glGenVertexArrays(1, &boxVao_);
-        glGenBuffers(1, &boxVbo_);
+        boxVao_.create();
+        boxVbo_.create();
         glBindVertexArray(boxVao_);
         glBindBuffer(GL_ARRAY_BUFFER, boxVbo_);
         glBufferData(GL_ARRAY_BUFFER, sizeof(cubeEdges), cubeEdges, GL_STATIC_DRAW);
@@ -139,8 +139,8 @@ bool App::initOpenGL() {
     }
 
     // Persistent buffers for the build-drag preview (reused each frame).
-    glGenVertexArrays(1, &dragVao_);
-    glGenBuffers(1, &dragVbo_);
+    dragVao_.create();
+    dragVbo_.create();
     glBindVertexArray(dragVao_);
     glBindBuffer(GL_ARRAY_BUFFER, dragVbo_);
     glEnableVertexAttribArray(0);
@@ -207,11 +207,11 @@ void App::shutdown() {
         vertexEditor_.destroy();
         details_.destroy();
         build_.destroy();
-        if (boxVao_) { glDeleteVertexArrays(1, &boxVao_); boxVao_ = 0; }
-        if (boxVbo_) { glDeleteBuffers(1, &boxVbo_); boxVbo_ = 0; }
-        if (dragVao_) { glDeleteVertexArrays(1, &dragVao_); dragVao_ = 0; }
-        if (dragVbo_) { glDeleteBuffers(1, &dragVbo_); dragVbo_ = 0; }
-        if (noiseTex_) { glDeleteTextures(1, &noiseTex_); noiseTex_ = 0; }
+        boxVao_.destroy();
+        boxVbo_.destroy();
+        dragVao_.destroy();
+        dragVbo_.destroy();
+        noiseTex_.destroy();
         props_.clear();
         modelLibrary_.clear();
         glfwDestroyWindow(window_);

@@ -1,5 +1,5 @@
 #pragma once
-#include <glad/gl.h>
+#include "gl_resource.h"
 #include <glm/glm.hpp>
 #include <vector>
 
@@ -72,8 +72,10 @@ private:
 
     DragMode dragMode_ = Vertical;
 
-    GLuint vaoLine_ = 0, vboLine_ = 0;
-    GLuint vaoPoint_ = 0, vboPoint_ = 0;
+    GlVertexArray vaoLine_;
+    GlBuffer      vboLine_;
+    GlVertexArray vaoPoint_;
+    GlBuffer      vboPoint_;
 
     float worldSize(const Camera& cam, const glm::vec3& pos) const;
     void  mouseRay(const Camera& cam, glm::vec3& outOrigin, glm::vec3& outDir) const;

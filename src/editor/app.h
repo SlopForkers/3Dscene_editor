@@ -125,7 +125,7 @@ private:
 
     // Procedural noise generator state (Noise category panel).
     Noise::Params noiseParams_;
-    GLuint noiseTex_ = 0;               // preview texture (RGBA8, previewSz^2)
+    GlTexture    noiseTex_;                   // preview texture (previewSz^2, RGBA8)
     bool   noisePreviewDirty_ = true;
     bool   realtimeNoise_ = false;
     static constexpr int noisePreviewSize_ = 128;
@@ -177,10 +177,12 @@ private:
     double buildTexPressMY_ = 0.0;
 
     // Selection box wireframe VAO/VBO (unit cube, reused per frame).
-    GLuint boxVao_ = 0, boxVbo_ = 0;
+    GlVertexArray boxVao_;
+    GlBuffer      boxVbo_;
     // Persistent VAO/VBO for the build-drag preview lines (re-uploaded per
     // frame instead of creating/destroying GL objects every frame).
-    GLuint dragVao_ = 0, dragVbo_ = 0;
+    GlVertexArray dragVao_;
+    GlBuffer      dragVbo_;
 
     bool imguiInitialized_ = false;
     // Erase flag for the build drag, captured at PRESS time (checking Ctrl at

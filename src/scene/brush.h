@@ -1,5 +1,5 @@
 #pragma once
-#include <glad/gl.h>
+#include "gl_resource.h"
 #include <glm/glm.hpp>
 
 // Renders the on-terrain brush cursor as a flat ring of line segments.
@@ -18,7 +18,8 @@ public:
               const glm::vec3& color, bool filled = false, float strength = 0.0f) const;
 
 private:
-    GLuint vao_ = 0, vbo_ = 0;
+    GlVertexArray vao_;
+    GlBuffer      vbo_;
     int   count_ = 0;
     float radius_ = 1.0f;
     int   segments_ = 0;

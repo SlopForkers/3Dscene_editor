@@ -514,8 +514,8 @@ void App::drawNoiseContent() {
     ImGui::Separator();
 
     // --- Preview ---
-    if (!noiseTex_) {
-        glGenTextures(1, &noiseTex_);
+    if (!noiseTex_.id()) {
+        noiseTex_.create();
         glBindTexture(GL_TEXTURE_2D, noiseTex_);
         glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, noisePreviewSize_, noisePreviewSize_,
                      0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
@@ -553,7 +553,7 @@ void App::drawNoiseContent() {
     // Display preview centred, as large as the panel allows.
     float avail = ImGui::GetContentRegionAvail().x;
     float pv = std::min(avail, 220.0f);
-    ImGui::Image((ImTextureID)(intptr_t)noiseTex_, ImVec2(pv, pv));
+    ImGui::Image((ImTextureID)(intptr_t)noiseTex_.id(), ImVec2(pv, pv));
     ImGui::SameLine();
     ImGui::BeginGroup();
     ImGui::Text("Preview");
