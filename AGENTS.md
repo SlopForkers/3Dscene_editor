@@ -7,8 +7,8 @@ Guidance for coding agents working in this repository.
 A single-window 3D scene authoring tool: heightfield terrain sculpting and
 texture painting, glTF/VRM prop placement, instanced vegetation painting,
 snap-based block building, HDR skybox import, and .scene save/load.
-C++17, OpenGL 3.3 core, Dear ImGui, GLFW, GLM, cgltf, stb. No tests;
-verification is by building and running.
+C++20, OpenGL 3.3 core, Dear ImGui, GLFW, GLM 1.0.3, cgltf, stb. Unit tests
+(doctest, `tests/`); integration verification is by building and running.
 
 ## Build & run
 
@@ -19,11 +19,12 @@ cmake --build build --config Release
 ```
 
 - The app loads shaders from `<cwd>/shaders` — run it from `build/bin`.
-- Dependencies are FetchContent'd (GLFW, GLM, ImGui, cgltf, stb); GLAD2 is
-  vendored in `external/glad/`. `cmake_policy(SET CMP0169 OLD)` is required
-  for the glm download path — do not "modernize" it away.
+- Dependencies are FetchContent'd (GLFW 3.4, GLM 1.0.3, ImGui v1.91.5,
+  cgltf v1.15, stb — pinned commit). GLAD2 is
+  vendored in `external/glad/`.
 - CLI smoke test: `scene_editor model.glb sky.hdr test.savetest`
   (.savetest = save the scene then immediately reload it).
+- Unit tests: `cmake --build build --target tests && build/bin/tests.exe`.
 
 ## Architecture
 
@@ -112,6 +113,9 @@ lives in.
 - **Scene loading**: every length/index field from a `.scene` file is
   validated against the buffer before use (see the `readU32`/`readBlob`
   cursors in `App::loadScene`). Keep it that way.
+- **Build & CI**: `-Wall -Wextra -Wpedantic` on `scene_editor`; dependency
+  includes are `SYSTEM` (warnings only on our code). New code must be
+  warning-clean. `.clang-format` is provided (Google-based, 4-space, K&R).
 
 ### .scene format
 
