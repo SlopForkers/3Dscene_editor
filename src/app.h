@@ -29,7 +29,7 @@ public:
     enum Category {
         CatBrush = 0, CatVertex, CatProps, CatVegetation,  // tool categories
         CatBuild,                                          // building blocks
-        CatTerrain, CatLayers, CatEnv, CatView,            // setting categories
+        CatTerrain, CatNoise, CatLayers, CatEnv, CatView, // setting categories
         CatFile,                                           // file operations
         CatCount
     };
@@ -56,6 +56,7 @@ private:
     void drawVegetationContent();
     void drawBuildContent();
     void drawTerrainContent();
+    void drawNoiseContent();
     void drawLayersContent();
     void drawEnvContent();
     void drawViewContent();
@@ -123,6 +124,14 @@ private:
     // Lighting
     float lightAzimuth_ = 0.6f;
     float lightElevation_ = 0.9f;
+
+    // Procedural noise generator state (Noise category panel).
+    Noise::Params noiseParams_;
+    Noise::Params lastNoiseApplied_{};  // snapshot for change detection
+    GLuint noiseTex_ = 0;               // preview texture (RGBA8, previewSz^2)
+    bool   noisePreviewDirty_ = true;
+    bool   realtimeNoise_ = false;
+    static constexpr int noisePreviewSize_ = 128;
 
     // Timing
     double lastTime_ = 0.0;

@@ -14,6 +14,8 @@
 #include <algorithm>
 #include <cstdio>
 #include <cctype>
+#include <random>
+#include <chrono>
 
 static glm::vec3 lightDirFromAngles(float azimuth, float elevation) {
     float ce = std::cos(elevation);
@@ -164,6 +166,7 @@ void App::shutdown() {
         build_.destroy();
         if (boxVao_) { glDeleteVertexArrays(1, &boxVao_); boxVao_ = 0; }
         if (boxVbo_) { glDeleteBuffers(1, &boxVbo_); boxVbo_ = 0; }
+        if (noiseTex_) { glDeleteTextures(1, &noiseTex_); noiseTex_ = 0; }
         props_.clear();
         modelLibrary_.clear();
         glfwDestroyWindow(window_);
@@ -1109,6 +1112,18 @@ static void CatTerrain(ImDrawList* dl, ImVec2 p0, ImVec2 p1, ImU32 col) {
                        ImVec2(sx1, base), col, 2.5f);
     dl->AddLine(ImVec2(x0 - 2, base), ImVec2(x1 + 2, base), col, 1.5f);
 }
+static void CatNoise(ImDrawList* dl, ImVec2 p0, ImVec2 p1, ImU32 col) {
+    // Scattered dots of varying size to suggest a noise field.
+    float w = p1.x - p0.x, h = p1.y - p0.y;
+    struct P { float x, y, r; };
+    P pts[] = {
+        {0.22f, 0.30f, 2.0f}, {0.45f, 0.22f, 1.4f}, {0.68f, 0.35f, 2.4f},
+        {0.30f, 0.55f, 1.6f}, {0.55f, 0.62f, 2.0f}, {0.78f, 0.58f, 1.2f},
+        {0.38f, 0.78f, 1.8f}, {0.65f, 0.80f, 1.4f},
+    };
+    for (const auto& p : pts)
+        dl->AddCircleFilled(ImVec2(p0.x + p.x * w, p0.y + p.y * h), p.r, col);
+}
 static void CatLayers(ImDrawList* dl, ImVec2 p0, ImVec2 p1, ImU32 col) {
     float w = (p1.x - p0.x) * 0.5f, h = (p1.y - p0.y) * 0.16f;
     float cx = (p0.x + p1.x) * 0.5f, cy = (p0.y + p1.y) * 0.5f;
@@ -1220,6 +1235,7 @@ static IconFn catIcon(int cat) {
         case App::CatVegetation: return &CatVegetation;
         case App::CatBuild:      return &CatBuild;
         case App::CatTerrain:    return &CatTerrain;
+        case App::CatNoise:      return &CatNoise;
         case App::CatLayers:     return &CatLayers;
         case App::CatEnv:        return &CatEnv;
         case App::CatView:       return &CatView;
@@ -1235,6 +1251,7 @@ static const char* catName(int cat) {
         case App::CatVegetation: return "Vegetation";
         case App::CatBuild:      return "Build";
         case App::CatTerrain:    return "Terrain";
+        case App::CatNoise:      return "Noise";
         case App::CatLayers:   return "Layers";
         case App::CatEnv:      return "Environment";
         case App::CatView:       return "View";
@@ -1305,7 +1322,7 @@ void App::drawLeftPanel() {
     ImVec2 railStart = ImGui::GetCursorScreenPos();
     int order[CatCount + 2] = { CatBrush, CatVertex, CatProps, CatVegetation,
                                  CatBuild, -1,
-                                 CatTerrain, CatLayers, CatEnv, CatView, -1,
+                                 CatTerrain, CatNoise, CatLayers, CatEnv, CatView, -1,
                                  CatFile };
     ImVec2 cursor = railStart;
     for (int o = 0; o < CatCount + 2; ++o) {
@@ -1335,6 +1352,7 @@ void App::drawLeftPanel() {
         case CatVegetation: drawVegetationContent(); break;
         case CatBuild:      drawBuildContent();      break;
         case CatTerrain:    drawTerrainContent();     break;
+        case CatNoise:      drawNoiseContent();      break;
         case CatLayers:     drawLayersContent();      break;
         case CatEnv:        drawEnvContent();         break;
         case CatView:       drawViewContent();        break;
@@ -1897,6 +1915,122 @@ void App::drawTerrainContent() {
     if (ImGui::Button("Flatten")) terrain_.flatten(0.0f);
     ImGui::SameLine();
     if (ImGui::Button("Generate Hills")) terrain_.generateHills();
+}
+
+void App::drawNoiseContent() {
+    ImGui::TextDisabled("Noise generator");
+    ImGui::Separator();
+
+    // --- Preview ---
+    if (!noiseTex_) {
+        glGenTextures(1, &noiseTex_);
+        glBindTexture(GL_TEXTURE_2D, noiseTex_);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, noisePreviewSize_, noisePreviewSize_,
+                     0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    }
+    if (noisePreviewDirty_) {
+        std::vector<uint8_t> pix(noisePreviewSize_ * noisePreviewSize_ * 4);
+        int perm[512];
+        Noise::buildPerm(noiseParams_.seed, perm);
+        // Sample the preview over a world-sized region so it matches what the
+        // terrain will receive.
+        float ws = terrain_.worldSize();
+        for (int y = 0; y < noisePreviewSize_; ++y) {
+            for (int x = 0; x < noisePreviewSize_; ++x) {
+                float wx = (float(x) / (noisePreviewSize_ - 1) - 0.5f) * ws;
+                float wz = (float(y) / (noisePreviewSize_ - 1) - 0.5f) * ws;
+                float n = Noise::sampleRawWithPerm(noiseParams_, wx, wz, perm);
+                uint8_t v = (uint8_t)std::clamp((n * 0.5f + 0.5f) * 255.0f, 0.0f, 255.0f);
+                int i = (y * noisePreviewSize_ + x) * 4;
+                pix[i] = v; pix[i + 1] = v; pix[i + 2] = v; pix[i + 3] = 255;
+            }
+        }
+        glBindTexture(GL_TEXTURE_2D, noiseTex_);
+        glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, noisePreviewSize_, noisePreviewSize_,
+                        GL_RGBA, GL_UNSIGNED_BYTE, pix.data());
+        noisePreviewDirty_ = false;
+    }
+
+    // Display preview centred, as large as the panel allows.
+    float avail = ImGui::GetContentRegionAvail().x;
+    float pv = std::min(avail, 220.0f);
+    ImGui::Image((ImTextureID)(intptr_t)noiseTex_, ImVec2(pv, pv));
+    ImGui::SameLine();
+    ImGui::BeginGroup();
+    ImGui::Text("Preview");
+    ImGui::TextDisabled("%dx%d", noisePreviewSize_, noisePreviewSize_);
+    ImGui::EndGroup();
+
+    ImGui::Spacing();
+
+    // --- Realtime toggle ---
+    bool changed = false;
+    changed |= ImGui::Checkbox("Realtime generation", &realtimeNoise_);
+    if (realtimeNoise_)
+        ImGui::TextDisabled("(applies to terrain on every change)");
+
+    ImGui::Separator();
+
+    // --- Noise type & blend ---
+    const char* typeNames[] = { "Perlin", "Simplex", "Value", "Worley", "Ridge" };
+    int ti = (int)noiseParams_.type;
+    if (ImGui::Combo("Noise type", &ti, typeNames, Noise::TypeCount)) {
+        noiseParams_.type = (Noise::Type)ti; changed = true;
+    }
+    const char* blendNames[] = { "Replace", "Add", "Subtract", "Multiply", "Min", "Max" };
+    int bi = (int)noiseParams_.blend;
+    if (ImGui::Combo("Blend mode", &bi, blendNames, Noise::BlendCount)) {
+        noiseParams_.blend = (Noise::BlendMode)bi; changed = true;
+    }
+
+    ImGui::Spacing();
+    ImGui::TextDisabled("Shape");
+    changed |= ImGui::SliderFloat("Amplitude",  &noiseParams_.amplitude,   0.1f,  60.0f, "%.1f");
+    changed |= ImGui::SliderFloat("Frequency",  &noiseParams_.frequency,   0.05f, 10.0f, "%.2f");
+    changed |= ImGui::SliderFloat("Exponent",   &noiseParams_.exponent,    0.1f,   4.0f, "%.2f");
+    changed |= ImGui::SliderFloat2("Offset",    &noiseParams_.offsetX,  -500.0f, 500.0f, "%.1f");
+
+    ImGui::Spacing();
+    ImGui::TextDisabled("Fractal (fBm)");
+    int oct = noiseParams_.octaves;
+    if (ImGui::SliderInt("Octaves", &oct, 1, 10)) { noiseParams_.octaves = oct; changed = true; }
+    changed |= ImGui::SliderFloat("Persistence", &noiseParams_.persistence, 0.0f, 1.0f, "%.2f");
+    changed |= ImGui::SliderFloat("Lacunarity",  &noiseParams_.lacunarity,  1.0f, 4.0f, "%.2f");
+
+    ImGui::Spacing();
+    ImGui::TextDisabled("Modifiers");
+    if (ImGui::Checkbox("Invert",  &noiseParams_.invert))  changed = true;
+    ImGui::SameLine();
+    if (ImGui::Checkbox("Ridged", &noiseParams_.ridged)) changed = true;
+
+    ImGui::Spacing();
+    if (ImGui::SliderInt("Seed", &noiseParams_.seed, 1, 99999)) changed = true;
+    ImGui::SameLine();
+    if (ImGui::Button("Random")) {
+        std::mt19937 rng((unsigned)std::chrono::steady_clock::now().time_since_epoch().count());
+        noiseParams_.seed = (int)(rng() % 99999) + 1;
+        changed = true;
+    }
+
+    // --- React to changes ---
+    if (changed) {
+        noisePreviewDirty_ = true;
+        if (realtimeNoise_) {
+            terrain_.generateNoise(noiseParams_);
+            lastNoiseApplied_ = noiseParams_;
+        }
+    }
+
+    ImGui::Spacing();
+    ImGui::Separator();
+    if (ImGui::Button("Generate", ImVec2(-1, 0))) {
+        terrain_.generateNoise(noiseParams_);
+        lastNoiseApplied_ = noiseParams_;
+    }
 }
 
 void App::drawLayersContent() {

@@ -3,6 +3,7 @@
 #include <glm/glm.hpp>
 #include <vector>
 #include <string>
+#include "noise.h"
 
 // A heightfield terrain rendered as a regular grid of triangles.
 // Heights live in a flat array and are edited by brushes.
@@ -115,6 +116,9 @@ public:
     void flatten(float height = 0.0f);
     // Generate a gentle starting landscape (a couple of hills) for demonstration.
     void generateHills();
+    // Synthesise heights from a procedural noise field. The blend mode
+    // decides how the noise combines with the existing heightfield.
+    void generateNoise(const Noise::Params& p);
 
     // Vertex layout used by the GPU buffer.
     struct Vertex {

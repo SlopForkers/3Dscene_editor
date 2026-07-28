@@ -381,6 +381,28 @@ void Terrain::generateHills() {
     uploadVertices(true);
 }
 
+void Terrain::generateNoise(const Noise::Params& p) {
+    int perm[512];
+    Noise::buildPerm(p.seed, perm);
+    for (int iz = 0; iz < gridZ_; ++iz) {
+        for (int ix = 0; ix < gridX_; ++ix) {
+            float n = Noise::sample2DWithPerm(p, worldX(ix), worldZ(iz), perm);
+            float& h = heights_[idx(ix, iz)];
+            switch (p.blend) {
+                case Noise::Replace:  h = n; break;
+                case Noise::Add:      h += n; break;
+                case Noise::Subtract: h -= n; break;
+                case Noise::Multiply: h *= n; break;
+                case Noise::Min:      h = std::min(h, n); break;
+                case Noise::Max:      h = std::max(h, n); break;
+            }
+        }
+    }
+    recomputeAllNormals();
+    updateStats();
+    uploadVertices(true);
+}
+
 float Terrain::heightAtWorld(float worldX, float worldZ) const {
     // Map world to grid coordinate (in vertex units, continuous).
     float fx = (worldX / worldSize_ + 0.5f) * (gridX_ - 1);
