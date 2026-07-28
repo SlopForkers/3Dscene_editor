@@ -46,11 +46,11 @@ FetchContent_MakeAvailable(glm)
 # (GCC/Clang ignore the -I form when the dir is also passed via -isystem).
 target_include_directories(glm SYSTEM INTERFACE ${glm_SOURCE_DIR})
 
-# Dear ImGui
+# Dear ImGui (v1.92+: docking + multi-viewport are in mainline)
 FetchContent_Declare(
     imgui
     GIT_REPOSITORY https://github.com/ocornut/imgui.git
-    GIT_TAG        v1.91.5
+    GIT_TAG        v1.92.5
     GIT_SHALLOW    TRUE
 )
 FetchContent_MakeAvailable(imgui)
