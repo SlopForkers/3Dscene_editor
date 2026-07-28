@@ -8,243 +8,16 @@
 #include <cstdlib>
 #include <cstring>
 #include <iostream>
-#include <sstream>
 #include <string>
 #include <vector>
 #include <map>
 #include <algorithm>
 #include <filesystem>
+#include <nlohmann/json.hpp>
 
 // ---------------------------------------------------------------------------
-// Minimal JSON parser / serializer (no external dependency).
-// Supports: objects, arrays, strings, numbers, bools, null.
+// Scene save / load
 // ---------------------------------------------------------------------------
-
-namespace json {
-
-class Value;
-using Object = std::map<std::string, Value>;
-using Array  = std::vector<Value>;
-
-class Value {
-public:
-    enum Type { Null, Bool, Number, String, ArrayT, ObjectT };
-    Type type = Null;
-    bool b = false;
-    double num = 0.0;
-    std::string str;
-    std::vector<Value> arr;
-    std::map<std::string, Value> obj;
-
-    Value() {}
-    Value(Type t) : type(t) {}
-    Value(bool v) : type(Bool), b(v) {}
-    Value(double v) : type(Number), num(v) {}
-    Value(int v) : type(Number), num((double)v) {}
-    Value(const std::string& v) : type(String), str(v) {}
-    Value(const char* v) : type(String), str(v) {}
-
-    bool isObj() const { return type == ObjectT; }
-    bool isArr() const { return type == ArrayT; }
-    bool isStr() const { return type == String; }
-    bool isNum() const { return type == Number; }
-
-    const Value& operator[](const char* key) const {
-        static Value nullVal;
-        auto it = obj.find(key);
-        return it != obj.end() ? it->second : nullVal;
-    }
-    const Value& operator[](size_t i) const {
-        static Value nullVal;
-        return i < arr.size() ? arr[i] : nullVal;
-    }
-    size_t size() const { return arr.size(); }
-
-    double asNum(double def = 0) const { return type == Number ? num : def; }
-    const std::string& asStr() const { return str; }
-    bool asBool(bool def = false) const { return type == Bool ? b : def; }
-};
-
-// --- Parser ---
-
-struct Parser {
-    const char* s;
-    size_t pos;
-
-    Parser(const std::string& text) : s(text.c_str()), pos(0) {}
-
-    void skipWs() {
-        while (s[pos] && (s[pos] == ' ' || s[pos] == '\t' || s[pos] == '\n' || s[pos] == '\r'))
-            ++pos;
-    }
-
-    Value parse() {
-        skipWs();
-        if (!s[pos]) return Value();
-        char c = s[pos];
-        if (c == '{') return parseObj();
-        if (c == '[') return parseArr();
-        if (c == '"') return parseStr();
-        if (c == 't' || c == 'f') return parseBool();
-        if (c == 'n') { pos += 4; return Value(); }
-        return parseNum();
-    }
-
-    Value parseObj() {
-        Value v; v.type = Value::ObjectT;
-        ++pos; // {
-        skipWs();
-        if (s[pos] == '}') { ++pos; return v; }
-        while (s[pos]) {
-            skipWs();
-            Value key = parseStr();
-            skipWs();
-            if (s[pos] == ':') ++pos;
-            Value val = parse();
-            v.obj[key.str] = val;
-            skipWs();
-            if (s[pos] == ',') { ++pos; continue; }
-            if (s[pos] == '}') { ++pos; break; }
-            break;
-        }
-        return v;
-    }
-
-    Value parseArr() {
-        Value v; v.type = Value::ArrayT;
-        ++pos; // [
-        skipWs();
-        if (s[pos] == ']') { ++pos; return v; }
-        while (s[pos]) {
-            v.arr.push_back(parse());
-            skipWs();
-            if (s[pos] == ',') { ++pos; continue; }
-            if (s[pos] == ']') { ++pos; break; }
-            break;
-        }
-        return v;
-    }
-
-    Value parseStr() {
-        Value v; v.type = Value::String;
-        ++pos; // opening "
-        while (s[pos] && s[pos] != '"') {
-            if (s[pos] == '\\') {
-                ++pos;
-                char esc = s[pos++];
-                switch (esc) {
-                    case 'n': v.str += '\n'; break;
-                    case 't': v.str += '\t'; break;
-                    case 'r': v.str += '\r'; break;
-                    case '\\': v.str += '\\'; break;
-                    case '"': v.str += '"'; break;
-                    case '/': v.str += '/'; break;
-                    default: v.str += esc; break;
-                }
-            } else {
-                v.str += s[pos++];
-            }
-        }
-        if (s[pos] == '"') ++pos;
-        return v;
-    }
-
-    Value parseBool() {
-        if (s[pos] == 't') { pos += 4; return Value(true); }
-        pos += 5; return Value(false);
-    }
-
-    Value parseNum() {
-        Value v; v.type = Value::Number;
-        char* end;
-        v.num = std::strtod(s + pos, &end);
-        pos = (size_t)(end - s);
-        return v;
-    }
-};
-
-// --- Serializer ---
-
-struct Writer {
-    std::string out;
-    int indent = 0;
-
-    void w(const char* s) { out += s; }
-    void w(char c) { out += c; }
-    void nl() { out += '\n'; for (int i = 0; i < indent; ++i) out += "  "; }
-
-    void writeStr(const std::string& s) {
-        out += '"';
-        for (char c : s) {
-            switch (c) {
-                case '\\': out += "\\\\"; break;
-                case '"':  out += "\\\""; break;
-                case '\n': out += "\\n"; break;
-                case '\t': out += "\\t"; break;
-                case '\r': out += "\\r"; break;
-                default: out += c; break;
-            }
-        }
-        out += '"';
-    }
-
-    void write(const Value& v) {
-        switch (v.type) {
-            case Value::Null:   w("null"); break;
-            case Value::Bool:   w(v.b ? "true" : "false"); break;
-            case Value::Number: {
-                char buf[64];
-                double n = v.num;
-                if (!std::isfinite(n)) {
-                    w('0');   // JSON has no nan/inf — serialize as 0
-                } else if (n == (double)(long long)n && std::abs(n) < 1e15)
-                    std::snprintf(buf, sizeof(buf), "%lld", (long long)n);
-                else
-                    // 9 significant digits round-trip a float exactly.
-                    std::snprintf(buf, sizeof(buf), "%.9g", n);
-                w(buf);
-                break;
-            }
-            case Value::String: writeStr(v.str); break;
-            case Value::ArrayT: {
-                w('[');
-                for (size_t i = 0; i < v.arr.size(); ++i) {
-                    if (i) w(", ");
-                    write(v.arr[i]);
-                }
-                w(']');
-                break;
-            }
-            case Value::ObjectT: {
-                w('{'); indent++;
-                bool first = true;
-                for (auto& [k, val] : v.obj) {
-                    if (!first) w(',');
-                    nl();
-                    writeStr(k); w(": ");
-                    write(val);
-                    first = false;
-                }
-                indent--; nl();
-                w('}');
-                break;
-            }
-        }
-    }
-};
-
-Value parse(const std::string& text) {
-    Parser p(text);
-    return p.parse();
-}
-
-std::string dump(const Value& v) {
-    Writer w;
-    w.write(v);
-    return w.out;
-}
-
-} // namespace json
 
 // ---------------------------------------------------------------------------
 // Scene save / load
@@ -279,138 +52,136 @@ bool App::saveScene(const std::string& path) {
     std::string baseDir = baseDirOf(path);
 
     // Build JSON metadata (everything except heights/splat binary blobs).
-    json::Value root(json::Value::ObjectT);
-    root.obj["version"] = json::Value(2);
+    nlohmann::json root = nlohmann::json::object();
+    root["version"] = 2;
 
     // Terrain metadata.
-    json::Value terrain(json::Value::ObjectT);
-    terrain.obj["gridX"] = json::Value(terrain_.gridX());
-    terrain.obj["gridZ"] = json::Value(terrain_.gridZ());
-    terrain.obj["worldSize"] = json::Value(terrain_.worldSize());
+    nlohmann::json terrain = nlohmann::json::object();
+    terrain["gridX"] = terrain_.gridX();
+    terrain["gridZ"] = terrain_.gridZ();
+    terrain["worldSize"] = terrain_.worldSize();
 
-    json::Value layers(json::Value::ArrayT);
+    nlohmann::json layers = nlohmann::json::array();
     for (int i = 0; i < terrain_.layerCount(); ++i) {
         const auto& L = terrain_.layers()[i];
-        json::Value layer(json::Value::ObjectT);
-        layer.obj["name"] = json::Value(L.name);
-        layer.obj["albedo"] = json::Value(relPath(L.albedoPath, baseDir));
-        layer.obj["normal"] = json::Value(relPath(L.normalPath, baseDir));
-        layer.obj["tileSize"] = json::Value(L.tileSize);
-        layers.arr.push_back(layer);
+        nlohmann::json layer = nlohmann::json::object();
+        layer["name"] = L.name;
+        layer["albedo"] = relPath(L.albedoPath, baseDir);
+        layer["normal"] = relPath(L.normalPath, baseDir);
+        layer["tileSize"] = L.tileSize;
+        layers.push_back(layer);
     }
-    terrain.obj["layers"] = layers;
-    root.obj["terrain"] = terrain;
+    terrain["layers"] = layers;
+    root["terrain"] = terrain;
 
     // Skybox.
-    json::Value sky(json::Value::ObjectT);
+    nlohmann::json sky = nlohmann::json::object();
     if (!skybox_.isDefault()) {
-        sky.obj["path"] = json::Value(relPath(skybox_.importedPath(), baseDir));
+        sky["path"] = relPath(skybox_.importedPath(), baseDir);
     } else {
-        sky.obj["path"] = json::Value("");
+        sky["path"] = "";
     }
-    sky.obj["exposure"] = json::Value(skyExposure_);
-    root.obj["skybox"] = sky;
+    sky["exposure"] = skyExposure_;
+    root["skybox"] = sky;
 
     // Lighting.
-    json::Value light(json::Value::ObjectT);
-    light.obj["azimuth"] = json::Value(lightAzimuth_);
-    light.obj["elevation"] = json::Value(lightElevation_);
-    root.obj["light"] = light;
+    nlohmann::json light = nlohmann::json::object();
+    light["azimuth"] = lightAzimuth_;
+    light["elevation"] = lightElevation_;
+    root["light"] = light;
 
     // Camera.
-    json::Value cam(json::Value::ObjectT);
-    cam.obj["tx"] = json::Value(camera_.target().x);
-    cam.obj["ty"] = json::Value(camera_.target().y);
-    cam.obj["tz"] = json::Value(camera_.target().z);
-    cam.obj["yaw"] = json::Value(camera_.yaw());
-    cam.obj["pitch"] = json::Value(camera_.pitch());
-    cam.obj["distance"] = json::Value(camera_.distance());
-    root.obj["camera"] = cam;
+    nlohmann::json cam = nlohmann::json::object();
+    cam["tx"] = camera_.target().x;
+    cam["ty"] = camera_.target().y;
+    cam["tz"] = camera_.target().z;
+    cam["yaw"] = camera_.yaw();
+    cam["pitch"] = camera_.pitch();
+    cam["distance"] = camera_.distance();
+    root["camera"] = cam;
 
     // Props.
-    json::Value props(json::Value::ArrayT);
+    nlohmann::json propsArr = nlohmann::json::array();
     for (const auto& p : props_.props()) {
         if (!p.model) continue;
-        json::Value prop(json::Value::ObjectT);
-        prop.obj["path"] = json::Value(relPath(p.model->sourcePath(), baseDir));
-        prop.obj["px"] = json::Value(p.position.x);
-        prop.obj["py"] = json::Value(p.position.y);
-        prop.obj["pz"] = json::Value(p.position.z);
-        prop.obj["rx"] = json::Value(p.rotationEuler.x);
-        prop.obj["ry"] = json::Value(p.rotationEuler.y);
-        prop.obj["rz"] = json::Value(p.rotationEuler.z);
-        prop.obj["sx"] = json::Value(p.scale.x);
-        prop.obj["sy"] = json::Value(p.scale.y);
-        prop.obj["sz"] = json::Value(p.scale.z);
-        prop.obj["name"] = json::Value(p.displayName);
-        props.arr.push_back(prop);
+        nlohmann::json prop = nlohmann::json::object();
+        prop["path"] = relPath(p.model->sourcePath(), baseDir);
+        prop["px"] = p.position.x;
+        prop["py"] = p.position.y;
+        prop["pz"] = p.position.z;
+        prop["rx"] = p.rotationEuler.x;
+        prop["ry"] = p.rotationEuler.y;
+        prop["rz"] = p.rotationEuler.z;
+        prop["sx"] = p.scale.x;
+        prop["sy"] = p.scale.y;
+        prop["sz"] = p.scale.z;
+        prop["name"] = p.displayName;
+        propsArr.push_back(prop);
     }
-    root.obj["props"] = props;
+    root["props"] = propsArr;
 
     // Details.
-    json::Value details(json::Value::ObjectT);
-    json::Value protos(json::Value::ArrayT);
+    nlohmann::json details = nlohmann::json::object();
+    nlohmann::json protos = nlohmann::json::array();
     for (int i = 0; i < details_.prototypeCount(); ++i) {
         const auto& p = details_.prototype(i);
-        json::Value proto(json::Value::ObjectT);
-        proto.obj["path"] = json::Value(p.model ? relPath(p.model->sourcePath(), baseDir) : "");
-        proto.obj["name"] = json::Value(p.name);
-        proto.obj["targetSize"] = json::Value(p.targetSize);
-        proto.obj["minScale"] = json::Value(p.minScale);
-        proto.obj["maxScale"] = json::Value(p.maxScale);
-        proto.obj["randomYaw"] = json::Value(p.randomYaw);
-        protos.arr.push_back(proto);
+        nlohmann::json proto = nlohmann::json::object();
+        proto["path"] = p.model ? relPath(p.model->sourcePath(), baseDir) : "";
+        proto["name"] = p.name;
+        proto["targetSize"] = p.targetSize;
+        proto["minScale"] = p.minScale;
+        proto["maxScale"] = p.maxScale;
+        proto["randomYaw"] = p.randomYaw;
+        protos.push_back(proto);
     }
-    details.obj["prototypes"] = protos;
+    details["prototypes"] = protos;
 
-    json::Value insts(json::Value::ArrayT);
+    nlohmann::json insts = nlohmann::json::array();
     for (const auto& inst : details_.instances()) {
-        json::Value iv(json::Value::ObjectT);
-        iv.obj["p"] = json::Value(inst.prototypeIndex);
-        iv.obj["x"] = json::Value(inst.position.x);
-        iv.obj["y"] = json::Value(inst.position.y);
-        iv.obj["z"] = json::Value(inst.position.z);
-        iv.obj["yaw"] = json::Value(inst.yaw);
-        iv.obj["scale"] = json::Value(inst.scale);
-        insts.arr.push_back(iv);
+        nlohmann::json iv = nlohmann::json::object();
+        iv["p"] = inst.prototypeIndex;
+        iv["x"] = inst.position.x;
+        iv["y"] = inst.position.y;
+        iv["z"] = inst.position.z;
+        iv["yaw"] = inst.yaw;
+        iv["scale"] = inst.scale;
+        insts.push_back(iv);
     }
-    details.obj["instances"] = insts;
-    root.obj["details"] = details;
+    details["instances"] = insts;
+    root["details"] = details;
 
     // Blocks (build system).
-    // First the shared block-texture library (paths only; textures reload on
-    // load).
-    json::Value btArr(json::Value::ArrayT);
+    nlohmann::json btArr = nlohmann::json::array();
     for (int i = 0; i < build_.blockTextureCount(); ++i) {
-        json::Value entry(json::Value::ObjectT);
-        entry.obj["path"] = json::Value(build_.blockTexturePath(i));
-        btArr.arr.push_back(entry);
+        nlohmann::json entry = nlohmann::json::object();
+        entry["path"] = build_.blockTexturePath(i);
+        btArr.push_back(entry);
     }
-    root.obj["blockTextures"] = btArr;
+    root["blockTextures"] = btArr;
 
-    json::Value blocksArr(json::Value::ArrayT);
+    nlohmann::json blocksArr = nlohmann::json::array();
     for (const auto& b : build_.blocks()) {
-        json::Value bk(json::Value::ObjectT);
-        bk.obj["type"] = json::Value((int)b.type);
-        bk.obj["cx"] = json::Value(b.position.x);
-        bk.obj["cy"] = json::Value(b.position.y);
-        bk.obj["cz"] = json::Value(b.position.z);
-        bk.obj["sx"] = json::Value(b.size.x);
-        bk.obj["sy"] = json::Value(b.size.y);
-        bk.obj["sz"] = json::Value(b.size.z);
-        bk.obj["r"]  = json::Value(b.color.r);
-        bk.obj["g"]  = json::Value(b.color.g);
-        bk.obj["b"]  = json::Value(b.color.b);
-        bk.obj["yaw"] = json::Value(b.yaw);
-        bk.obj["ti"] = json::Value(b.textureIdx);
-        bk.obj["tf"] = json::Value(b.textureFace);
-        bk.obj["ts"] = json::Value(b.texScale);
-        bk.obj["tm"] = json::Value(b.texMode);
-        blocksArr.arr.push_back(bk);
+        nlohmann::json bk = nlohmann::json::object();
+        bk["type"] = (int)b.type;
+        bk["cx"] = b.position.x;
+        bk["cy"] = b.position.y;
+        bk["cz"] = b.position.z;
+        bk["sx"] = b.size.x;
+        bk["sy"] = b.size.y;
+        bk["sz"] = b.size.z;
+        bk["r"]  = b.color.r;
+        bk["g"]  = b.color.g;
+        bk["b"]  = b.color.b;
+        bk["yaw"] = b.yaw;
+        bk["ti"] = b.textureIdx;
+        bk["tf"] = b.textureFace;
+        bk["ts"] = b.texScale;
+        bk["tm"] = b.texMode;
+        blocksArr.push_back(bk);
     }
-    root.obj["blocks"] = blocksArr;
+    root["blocks"] = blocksArr;
 
-    std::string jsonStr = json::dump(root);
+    std::string jsonStr = root.dump(2);
 
     // --- Assemble single binary file: magic + version + JSON + heights + splat ---
     // Built in memory first so a mid-write failure can't leave a truncated
@@ -497,8 +268,8 @@ bool App::loadScene(const std::string& path) {
     }
     std::string jsonStr(jsonPtr, jsonSize);
 
-    json::Value root = json::parse(jsonStr);
-    if (!root.isObj()) { std::cerr << "Invalid scene JSON\n"; return false; }
+    nlohmann::json root = nlohmann::json::parse(jsonStr, nullptr, false);
+    if (!root.is_object()) { std::cerr << "Invalid scene JSON\n"; return false; }
 
     // Heights: size prefix + float data.
     uint32_t heightsBytes;
@@ -517,12 +288,12 @@ bool App::loadScene(const std::string& path) {
     std::string baseDir = baseDirOf(path);
 
     // --- Apply terrain ---
-    const json::Value& t = root["terrain"];
-    if (t.isObj()) {
+    const auto& t = root["terrain"];
+    if (t.is_object()) {
         // Sanity-clamp grid dims before they are used in size math so a
         // hostile file can't overflow int in gx*gz.
-        int gx = std::clamp((int)t["gridX"].asNum(terrain_.gridX()), 1, 4096);
-        int gz = std::clamp((int)t["gridZ"].asNum(terrain_.gridZ()), 1, 4096);
+        int gx = std::clamp(t.value("gridX", terrain_.gridX()), 1, 4096);
+        int gz = std::clamp(t.value("gridZ", terrain_.gridZ()), 1, 4096);
 
         // Load heights from embedded binary blob. If the grid dims don't
         // match the current terrain the heightfield is left as-is (a warning
@@ -544,7 +315,6 @@ bool App::loadScene(const std::string& path) {
             terrain_.setSplat(splat);
         } else if (splatBytes == (uint32_t)((size_t)gx * gz * 4)) {
             std::vector<uint8_t> splat16((size_t)gx * gz * 16, 0);
-            // Old interleaved-per-texel 4 bytes -> map 0 planar block.
             size_t map0 = 0;
             for (size_t p = 0; p < (size_t)gx * gz; ++p)
                 std::memcpy(&splat16[map0 + p * 4], splatPtr + p * 4, 4);
@@ -554,15 +324,15 @@ bool App::loadScene(const std::string& path) {
         // Layers (library, up to MAX_LAYERS). Replace existing slot textures,
         // append brand-new layers, then trim any leftover procedural layers
         // beyond the saved set so the loaded layer list matches exactly.
-        const json::Value& layers = t["layers"];
-        if (layers.isArr()) {
+        const auto& layers = t["layers"];
+        if (layers.is_array()) {
             size_t savedN = layers.size();
             for (size_t i = 0; i < savedN; ++i) {
-                const json::Value& L = layers[i];
-                std::string albedo = L["albedo"].asStr();
-                std::string normal = L["normal"].asStr();
-                std::string nm = L["name"].asStr();
-                float ts = (float)L["tileSize"].asNum(8.0);
+                const auto& L = layers[i];
+                std::string albedo = L.value("albedo", "");
+                std::string normal = L.value("normal", "");
+                std::string nm = L.value("name", "");
+                float ts = L.value("tileSize", 8.0f);
                 if ((int)i >= terrain_.layerCount()) {
                     int idx = albedo.empty() ? -1 : terrain_.addLayer(absPath(albedo, baseDir));
                     if (idx < 0) continue;
@@ -582,29 +352,29 @@ bool App::loadScene(const std::string& path) {
     }
 
     // --- Skybox ---
-    const json::Value& sky = root["skybox"];
-    if (sky.isObj()) {
-        skyExposure_ = (float)sky["exposure"].asNum(1.0);
-        std::string skyPath = sky["path"].asStr();
+    const auto& sky = root["skybox"];
+    if (sky.is_object()) {
+        skyExposure_ = sky.value("exposure", 1.0f);
+        std::string skyPath = sky.value("path", "");
         if (!skyPath.empty()) skybox_.loadEquirect(skyboxConvertShader_, absPath(skyPath, baseDir));
         else skybox_.resetToDefault();
     }
 
     // --- Lighting ---
-    const json::Value& light = root["light"];
-    if (light.isObj()) {
-        lightAzimuth_   = (float)light["azimuth"].asNum(0.6);
-        lightElevation_ = (float)light["elevation"].asNum(0.9);
+    const auto& light = root["light"];
+    if (light.is_object()) {
+        lightAzimuth_   = light.value("azimuth", 0.6f);
+        lightElevation_ = light.value("elevation", 0.9f);
     }
 
     // --- Camera ---
-    const json::Value& cam = root["camera"];
-    if (cam.isObj()) {
-        glm::vec3 target((float)cam["tx"].asNum(), (float)cam["ty"].asNum(), (float)cam["tz"].asNum());
+    const auto& cam = root["camera"];
+    if (cam.is_object()) {
+        glm::vec3 target(cam.value("tx", 0.0f), cam.value("ty", 0.0f), cam.value("tz", 0.0f));
         camera_.setTarget(target);
-        camera_.setYaw((float)cam["yaw"].asNum(-0.6));
-        camera_.setPitch((float)cam["pitch"].asNum(0.6));
-        camera_.setDistance((float)cam["distance"].asNum(60.0));
+        camera_.setYaw(cam.value("yaw", -0.6f));
+        camera_.setPitch(cam.value("pitch", 0.6f));
+        camera_.setDistance(cam.value("distance", 60.0f));
     }
 
     // --- Clear existing props + details + blocks + model library ---
@@ -619,21 +389,21 @@ bool App::loadScene(const std::string& path) {
     selectedBlockFace_ = -1;
 
     // --- Block texture library (reload paths before blocks reference them) ---
-    const json::Value& btLib = root["blockTextures"];
-    if (btLib.isArr()) {
+    const auto& btLib = root["blockTextures"];
+    if (btLib.is_array()) {
         for (size_t i = 0; i < btLib.size(); ++i) {
-            const json::Value& e = btLib[i];
-            std::string p = absPath(e["path"].asStr(), baseDir);
+            const auto& e = btLib[i];
+            std::string p = absPath(e.value("path", ""), baseDir);
             if (!p.empty()) build_.loadBlockTexture(p);
         }
     }
 
     // --- Props ---
-    const json::Value& props = root["props"];
-    if (props.isArr()) {
+    const auto& props = root["props"];
+    if (props.is_array()) {
         for (size_t i = 0; i < props.size(); ++i) {
-            const json::Value& p = props[i];
-            std::string modelPath = absPath(p["path"].asStr(), baseDir);
+            const auto& p = props[i];
+            std::string modelPath = absPath(p.value("path", ""), baseDir);
             if (modelPath.empty()) continue;
             auto model = std::make_shared<Model>();
             if (!model->loadFromFile(modelPath)) {
@@ -641,14 +411,14 @@ bool App::loadScene(const std::string& path) {
                 continue;
             }
             modelLibrary_.push_back(model);
-            glm::vec3 pos((float)p["px"].asNum(), (float)p["py"].asNum(), (float)p["pz"].asNum());
-            std::string name = p["name"].asStr();
+            glm::vec3 pos(p.value("px", 0.0f), p.value("py", 0.0f), p.value("pz", 0.0f));
+            std::string name = p.value("name", "");
             int id = props_.addProp(model, pos, pos.y, 0.0f, name);
             if (id >= 0) {
                 Prop* prop = props_.findProp(id);
                 if (prop) {
-                    prop->rotationEuler = glm::vec3((float)p["rx"].asNum(), (float)p["ry"].asNum(), (float)p["rz"].asNum());
-                    prop->scale = glm::vec3((float)p["sx"].asNum(), (float)p["sy"].asNum(), (float)p["sz"].asNum());
+                    prop->rotationEuler = glm::vec3(p.value("rx", 0.0f), p.value("ry", 0.0f), p.value("rz", 0.0f));
+                    prop->scale = glm::vec3(p.value("sx", 0.0f), p.value("sy", 0.0f), p.value("sz", 0.0f));
                     prop->position = pos;
                 }
             }
@@ -656,13 +426,13 @@ bool App::loadScene(const std::string& path) {
     }
 
     // --- Details ---
-    const json::Value& det = root["details"];
-    if (det.isObj()) {
-        const json::Value& protos = det["prototypes"];
-        if (protos.isArr()) {
+    const auto& det = root["details"];
+    if (det.is_object()) {
+        const auto& protos = det["prototypes"];
+        if (protos.is_array()) {
             for (size_t i = 0; i < protos.size(); ++i) {
-                const json::Value& p = protos[i];
-                std::string modelPath = absPath(p["path"].asStr(), baseDir);
+                const auto& p = protos[i];
+                std::string modelPath = absPath(p.value("path", ""), baseDir);
                 if (modelPath.empty()) continue;
                 auto model = std::make_shared<Model>();
                 if (!model->loadFromFile(modelPath)) {
@@ -670,49 +440,49 @@ bool App::loadScene(const std::string& path) {
                     continue;
                 }
                 modelLibrary_.push_back(model);
-                details_.addPrototype(model, p["name"].asStr(), (float)p["targetSize"].asNum(2.0), modelPath);
+                details_.addPrototype(model, p.value("name", ""), p.value("targetSize", 2.0f), modelPath);
                 int pi = details_.prototypeCount() - 1;
                 auto* proto = details_.prototypeMutable(pi);
                 if (proto) {
-                    proto->minScale  = (float)p["minScale"].asNum(0.8);
-                    proto->maxScale  = (float)p["maxScale"].asNum(1.2);
-                    proto->randomYaw = (float)p["randomYaw"].asNum(1.0);
+                    proto->minScale  = p.value("minScale", 0.8f);
+                    proto->maxScale  = p.value("maxScale", 1.2f);
+                    proto->randomYaw = p.value("randomYaw", 1.0f);
                 }
             }
         }
         // Instances.
-        const json::Value& insts = det["instances"];
-        if (insts.isArr()) {
+        const auto& insts = det["instances"];
+        if (insts.is_array()) {
             for (size_t i = 0; i < insts.size(); ++i) {
-                const json::Value& iv = insts[i];
+                const auto& iv = insts[i];
                 DetailSystem::Instance inst;
-                inst.prototypeIndex = (int)iv["p"].asNum();
-                inst.position = glm::vec3((float)iv["x"].asNum(), (float)iv["y"].asNum(), (float)iv["z"].asNum());
-                inst.yaw = (float)iv["yaw"].asNum();
-                inst.scale = (float)iv["scale"].asNum(1.0);
+                inst.prototypeIndex = iv.value("p", 0);
+                inst.position = glm::vec3(iv.value("x", 0.0f), iv.value("y", 0.0f), iv.value("z", 0.0f));
+                inst.yaw = iv.value("yaw", 0.0f);
+                inst.scale = iv.value("scale", 1.0f);
                 details_.addInstance(inst);
             }
         }
     }
 
     // --- Blocks ---
-    const json::Value& blocks = root["blocks"];
-    if (blocks.isArr()) {
+    const auto& blocks = root["blocks"];
+    if (blocks.is_array()) {
         for (size_t i = 0; i < blocks.size(); ++i) {
-            const json::Value& bk = blocks[i];
-            glm::vec3 center((float)bk["cx"].asNum(), (float)bk["cy"].asNum(), (float)bk["cz"].asNum());
-            glm::vec3 size((float)bk["sx"].asNum(), (float)bk["sy"].asNum(), (float)bk["sz"].asNum());
-            glm::vec3 color((float)bk["r"].asNum(0.55f), (float)bk["g"].asNum(0.45f), (float)bk["b"].asNum(0.35f));
-            BuildSystem::BlockType type = (BuildSystem::BlockType)(int)bk["type"].asNum(BuildSystem::Wall);
-            float yaw = (float)bk["yaw"].asNum(0.0);
+            const auto& bk = blocks[i];
+            glm::vec3 center(bk.value("cx", 0.0f), bk.value("cy", 0.0f), bk.value("cz", 0.0f));
+            glm::vec3 size(bk.value("sx", 0.0f), bk.value("sy", 0.0f), bk.value("sz", 0.0f));
+            glm::vec3 color(bk.value("r", 0.55f), bk.value("g", 0.45f), bk.value("b", 0.35f));
+            BuildSystem::BlockType type = (BuildSystem::BlockType)bk.value("type", (int)BuildSystem::Wall);
+            float yaw = bk.value("yaw", 0.0f);
             int id = build_.placeBlock(center, size, type, color, yaw);
             // Restore per-block face texture. Validate against the LOADED
             // library size — if a texture file was missing its entry is
             // skipped and saved indices no longer line up; drop those refs.
-            int ti = (int)bk["ti"].asNum(-1.0);
-            int tf = (int)bk["tf"].asNum(-1.0);
-            float ts = (float)bk["ts"].asNum(1.0);
-            int tm = (int)bk["tm"].asNum(0.0);
+            int ti = bk.value("ti", -1);
+            int tf = bk.value("tf", -1);
+            float ts = bk.value("ts", 1.0f);
+            int tm = bk.value("tm", 0);
             if (ti >= build_.blockTextureCount()) ti = -1;
             if (ti >= 0 && tf >= 0 && id >= 0) {
                 build_.setBlockFaceTexture(id, ti, tf);

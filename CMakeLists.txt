@@ -71,6 +71,15 @@ FetchContent_Declare(
 )
 FetchContent_MakeAvailable(stb)
 
+# nlohmann_json (JSON for Modern C++, header-only)
+FetchContent_Declare(
+    nlohmann_json
+    GIT_REPOSITORY https://github.com/nlohmann/json.git
+    GIT_TAG        v3.11.3
+    GIT_SHALLOW    TRUE
+)
+FetchContent_MakeAvailable(nlohmann_json)
+
 # ---------------------------------------------------------------------------
 # GLAD2 loader (pre-generated, see external/glad)
 # ---------------------------------------------------------------------------
@@ -151,7 +160,7 @@ set(SOURCES
 
 add_executable(scene_editor ${SOURCES})
 target_link_libraries(scene_editor PRIVATE
-    glfw glad dear_imgui glm stb_image cgltf)
+    glfw glad dear_imgui glm stb_image cgltf nlohmann_json::nlohmann_json)
 target_include_directories(scene_editor PRIVATE
     ${CMAKE_SOURCE_DIR}/src
     ${CMAKE_SOURCE_DIR}/src/editor
