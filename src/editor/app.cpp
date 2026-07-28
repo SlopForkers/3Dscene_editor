@@ -20,6 +20,8 @@
 #include <cctype>
 #include <random>
 #include <chrono>
+#include <cfloat>
+#include <string>
 
 static glm::vec3 lightDirFromAngles(float azimuth, float elevation) {
     float ce = std::cos(elevation);
@@ -458,7 +460,8 @@ void App::handleInput(float dt) {
         vertexEditor_.cancelDrag();
         toolMode_ = (toolMode_ == ToolPaint)  ? ToolProp   :
                     (toolMode_ == ToolProp)   ? ToolVertex :
-                    (toolMode_ == ToolVertex) ? ToolBuild : ToolPaint;
+                    (toolMode_ == ToolVertex) ? ToolBuild  :
+                    (toolMode_ == ToolBuild)  ? ToolCamera : ToolPaint;
         if (wasVertex && toolMode_ != ToolVertex) wireframe_ = false;
         if (toolMode_ == ToolPaint) {
             activeTool_ = &terrainTool_; activeCategory_ = CatBrush;
@@ -466,6 +469,9 @@ void App::handleInput(float dt) {
             activeTool_ = &propTool_; activeCategory_ = CatProps;
         } else if (toolMode_ == ToolVertex) {
             activeTool_ = &vertexTool_; activeCategory_ = CatVertex; wireframe_ = true;
+        } else if (toolMode_ == ToolCamera) {
+            activeTool_ = &cameraTool_; activeCategory_ = CatCameras;
+            showCameras_ = true;
         } else { // ToolBuild
             activeTool_ = &buildTool_; activeCategory_ = CatBuild;
         }
@@ -864,7 +870,30 @@ void App::renderScene() {
 }
 
 // ---------------------------------------------------------------------------
-// Scene cameras: frustum lines, activation, preview FBOs.
+// Scene cameras: frustum lines, activation, picking, preview FBOs.
+
+// The 4 far-rect corners of a camera's visualisation frustum (fixed 6m
+// depth, 16:9 — the game's target aspect; the preview FBOs use it too).
+// False for a degenerate pose (position == target).
+static bool cameraFrustumCorners(const SceneCamera& c, glm::vec3 out[4]) {
+    glm::vec3 fwd = c.target - c.position;
+    if (glm::dot(fwd, fwd) < 1e-8f) return false;
+    glm::vec3 f = glm::normalize(fwd);
+    glm::vec3 up(0.0f, 1.0f, 0.0f);
+    if (std::abs(glm::dot(f, up)) > 0.999f) up = glm::vec3(1.0f, 0.0f, 0.0f);
+    glm::vec3 right = glm::normalize(glm::cross(f, up));
+    glm::vec3 upv = glm::cross(right, f);
+    const float depth = 6.0f;
+    const float aspect = 16.0f / 9.0f;
+    float hh = depth * std::tan(glm::radians(c.fov) * 0.5f);
+    float hw = hh * aspect;
+    glm::vec3 ctr = c.position + f * depth;
+    out[0] = ctr - right * hw - upv * hh;
+    out[1] = ctr + right * hw - upv * hh;
+    out[2] = ctr + right * hw + upv * hh;
+    out[3] = ctr - right * hw + upv * hh;
+    return true;
+}
 
 void App::drawCameraFrustums(const glm::mat4& vp) {
     if (!showCamFrustums_ || cameraRig_.cameras().empty()) return;
@@ -876,35 +905,24 @@ void App::drawCameraFrustums(const glm::mat4& vp) {
     glBindVertexArray(dragVao_);
     glBindBuffer(GL_ARRAY_BUFFER, dragVbo_);
 
+    glm::vec3 corners[4];
     for (const auto& c : cameraRig_.cameras()) {
-        glm::vec3 fwd = c.target - c.position;
-        if (glm::dot(fwd, fwd) < 1e-8f) continue;
-        glm::vec3 f = glm::normalize(fwd);
-        glm::vec3 up(0.0f, 1.0f, 0.0f);
-        if (std::abs(glm::dot(f, up)) > 0.999f) up = glm::vec3(1.0f, 0.0f, 0.0f);
-        glm::vec3 right = glm::normalize(glm::cross(f, up));
-        glm::vec3 upv = glm::cross(right, f);
-
-        // Frustum pyramid at a fixed visualisation depth (16:9 — the game's
-        // target aspect; the preview FBOs use it too).
-        const float depth = 6.0f;
-        const float aspect = 16.0f / 9.0f;
-        float hh = depth * std::tan(glm::radians(c.fov) * 0.5f);
-        float hw = hh * aspect;
-        glm::vec3 ctr = c.position + f * depth;
-        glm::vec3 c0 = ctr - right * hw - upv * hh;
-        glm::vec3 c1 = ctr + right * hw - upv * hh;
-        glm::vec3 c2 = ctr + right * hw + upv * hh;
-        glm::vec3 c3 = ctr - right * hw + upv * hh;
+        if (!cameraFrustumCorners(c, corners)) continue;
+        glm::vec3 upv = glm::normalize(corners[2] - corners[1]);   // far-rect up
+        const glm::vec3& c0 = corners[0];
+        const glm::vec3& c1 = corners[1];
+        const glm::vec3& c2 = corners[2];
+        const glm::vec3& c3 = corners[3];
         const glm::vec3& P = c.position;
         const glm::vec3& T = c.target;
+        float hh = glm::length(corners[2] - corners[1]) * 0.5f;
         float pts[20][3] = {
             {P.x,P.y,P.z}, {c0.x,c0.y,c0.z},   {P.x,P.y,P.z}, {c1.x,c1.y,c1.z},
             {P.x,P.y,P.z}, {c2.x,c2.y,c2.z},   {P.x,P.y,P.z}, {c3.x,c3.y,c3.z},
             {c0.x,c0.y,c0.z}, {c1.x,c1.y,c1.z}, {c1.x,c1.y,c1.z}, {c2.x,c2.y,c2.z},
             {c2.x,c2.y,c2.z}, {c3.x,c3.y,c3.z}, {c3.x,c3.y,c3.z}, {c0.x,c0.y,c0.z},
             {P.x,P.y,P.z}, {T.x,T.y,T.z},      // optical axis
-            // "up" tick on the frustum rect so roll reads correctly.
+            // "up" tick on the frustum rect so orientation reads correctly.
             {c2.x,c2.y,c2.z}, {c2.x + upv.x * hh * 0.4f,
                                c2.y + upv.y * hh * 0.4f,
                                c2.z + upv.z * hh * 0.4f},
@@ -920,6 +938,57 @@ void App::drawCameraFrustums(const glm::mat4& vp) {
 
     glBindVertexArray(0);
     glEnable(GL_DEPTH_TEST);
+}
+
+// Squared distance from a ray to a point; FLT_MAX when the closest approach
+// lies behind the ray origin.
+static float rayPointDist2(const glm::vec3& ro, const glm::vec3& rd,
+                           const glm::vec3& p, float& outT) {
+    glm::vec3 w = p - ro;
+    float t = glm::dot(w, rd);
+    if (t < 0.0f) return FLT_MAX;
+    glm::vec3 q = ro + rd * t;
+    outT = t;
+    glm::vec3 d = p - q;
+    return glm::dot(d, d);
+}
+
+int App::pickSceneCamera(const glm::vec3& ro, const glm::vec3& rd) const {
+    int bestId = -1;
+    float bestT = FLT_MAX;
+    auto consider = [&](const glm::vec3& p, float radius, int id) {
+        float t = 0.0f;
+        if (rayPointDist2(ro, rd, p, t) < radius * radius && t < bestT) {
+            bestT = t;
+            bestId = id;
+        }
+    };
+    glm::vec3 corners[4];
+    for (const auto& c : cameraRig_.cameras()) {
+        consider(c.position, 2.0f, c.id);
+        consider(c.target, 1.5f, c.id);
+        if (cameraFrustumCorners(c, corners))
+            for (int i = 0; i < 4; ++i) consider(corners[i], 1.0f, c.id);
+    }
+    return bestId;
+}
+
+void App::addCameraFromView() {
+    SceneCamera c;
+    c.name = "Camera " + std::to_string(cameraRig_.cameras().size() + 1);
+    c.position = camera_.position();
+    c.target   = camera_.target();
+    c.fov      = camera_.fov();
+    int id = cameraRig_.addCamera(c);
+    // Fetch AFTER addCamera: the vector push_back may have reallocated.
+    const SceneCamera* added = cameraRig_.findCamera(id);
+    if (!added) return;
+    history_.push(std::make_unique<CameraCommand>(
+        cameraRig_, *added, true, "Add Camera"));
+    selectedCameraId_ = id;
+    // The first camera becomes the game's initial camera by default.
+    if (cameraRig_.cameras().size() == 1) cameraRig_.setActive(id);
+    markCamPreviewsStale();
 }
 
 // Jump the editor orbit camera to a scene camera's pose. The orbit camera is

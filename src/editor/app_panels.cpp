@@ -962,24 +962,7 @@ void App::drawCamerasContent() {
     ImGui::TextDisabled("Scene cameras");
     ImGui::Separator();
 
-    if (ImGui::Button("Add from current view")) {
-        SceneCamera c;
-        c.name = "Camera " + std::to_string(cameraRig_.cameras().size() + 1);
-        c.position = camera_.position();
-        c.target   = camera_.target();
-        c.fov      = camera_.fov();
-        int id = cameraRig_.addCamera(c);
-        // Fetch AFTER addCamera: the vector push_back may have reallocated.
-        const SceneCamera* added = cameraRig_.findCamera(id);
-        if (added) {
-            history_.push(std::make_unique<CameraCommand>(
-                cameraRig_, *added, true, "Add Camera"));
-            selectedCameraId_ = id;
-            // The first camera becomes the game's initial camera by default.
-            if (cameraRig_.cameras().size() == 1) cameraRig_.setActive(id);
-            markCamPreviewsStale();
-        }
-    }
+    if (ImGui::Button("Add from current view")) addCameraFromView();
     ImGui::SameLine();
     ImGui::Checkbox("Frustums", &showCamFrustums_);
     if (ImGui::IsItemHovered())
@@ -1076,6 +1059,24 @@ void App::drawCamerasContent() {
         selectedCameraId_ = -1;
         markCamPreviewsStale();
     }
+}
+
+// Camera TOOL controls (Tools window): add + options. The camera list and
+// parameter editing live in the Cameras window (auto-opened by the tool).
+void App::drawCameraToolContent() {
+    if (ImGui::Button("Add from current view")) addCameraFromView();
+    ImGui::SameLine();
+    ImGui::Checkbox("Frustums", &showCamFrustums_);
+    ImGui::Separator();
+    ImGui::Text("Cameras: %d", (int)cameraRig_.cameras().size());
+    const SceneCamera* sel = cameraRig_.findCamera(selectedCameraId_);
+    ImGui::Text("Selected: %s", sel ? sel->name.c_str() : "(none)");
+    ImGui::Separator();
+    ImGui::TextWrapped("Cursor mode (no brush): left-click a camera frustum "
+                       "to select it; click empty ground to deselect. "
+                       "[ / ] cycles cameras; double-click in a list views "
+                       "through the camera.");
+    ImGui::TextWrapped("Edit name, tag, pose and FOV in the Cameras window.");
 }
 
 void App::drawCameraViewContent() {

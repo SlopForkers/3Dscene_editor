@@ -40,7 +40,7 @@ src/
  ├─ editor/
  │   ├─ main.cpp ................. entry point
  │   ├─ app.cpp / app.h .......... core loop, init/shutdown, input dispatch, render
- │   ├─ tools.cpp/h .............. ITool + TerrainTool/PropTool/VertexTool/BuildTool
+ │   ├─ tools.cpp/h .............. ITool + Terrain/Prop/Vertex/Build/CameraTool
  │   ├─ app_ui.cpp ............... dockspace shell, viewport/toolbar windows, help
  │   ├─ app_panels.cpp ........... one draw*Content() per dock window
  │   ├─ ui_icons.cpp/h ........... ImDrawList vector icons
@@ -153,7 +153,12 @@ lives in.
 - **Scene cameras**: `CameraRig` ids are the game's stable key — never reuse
   one (`addCameraWithId` for undo/load). The active id is the game's initial
   camera. Editor jump-to-pose inverts the orbit parameterisation
-  (`App::activateSceneCamera`); cycling hotkeys are `[`/`]`.
+  (`App::activateSceneCamera`); cycling hotkeys are `[`/`]`. The camera tool
+  is a pure cursor tool (no brush): left-click picks a camera via
+  `App::pickSceneCamera` (ray vs position/target/frustum corners, nearest
+  wins), empty click deselects. The frustum visualisation geometry
+  (`cameraFrustumCorners`, fixed 6m depth, 16:9) is shared by drawing and
+  picking — keep them in sync.
 - **Drag state**: captured at mouse-press (e.g. `buildDragErase_`), never
   re-read modifiers at release. Tool switches (Tab/category click) must
   cancel in-progress drags (`Gizmo::cancelDrag`, `VertexEditor::cancelDrag`,

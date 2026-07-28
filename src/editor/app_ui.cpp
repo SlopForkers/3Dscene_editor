@@ -242,7 +242,8 @@ void App::drawToolbarWindow() {
     };
 
     // --- Tools ---
-    const int toolCats[] = { CatBrush, CatVertex, CatProps, CatVegetation, CatBuild };
+    const int toolCats[] = { CatBrush, CatVertex, CatProps, CatVegetation,
+                             CatBuild, CatCameras };
     for (int cat : toolCats) {
         if (iconCell(icons::catIcon(cat), icons::catName(cat), activeCategory_ == cat))
             selectCategory(cat);
@@ -257,7 +258,6 @@ void App::drawToolbarWindow() {
         { CatEnv,     "Skybox/Settings",  &showSettings_  },
         { CatHistory, "History",          &showHistory_   },
         { CatFile,    "File",             &showFile_      },
-        { CatCameras, "Cameras",          &showCameras_   },
         { CatCamView, "Camera View",      &showCameraView_},
     };
     for (auto& p : panels) {
@@ -294,6 +294,7 @@ void App::drawToolsWindow() {
             case CatProps:      drawPropToolContent();   break;
             case CatVegetation: drawVegetationContent(); break;
             case CatBuild:      drawBuildContent();      break;
+            case CatCameras:    drawCameraToolContent(); break;
             default:            drawBrushContent();      break;
         }
     }
@@ -464,6 +465,11 @@ void App::selectCategory(int cat) {
         toolMode_ = ToolPaint; brush_.type = Terrain::BrushParams::Vegetation; activeTool_ = &terrainTool_;
     } else if (cat == CatBuild) {
         toolMode_ = ToolBuild; activeTool_ = &buildTool_;
+    } else if (cat == CatCameras) {
+        // Camera mode is a cursor tool (no brush) — clicking the tool icon
+        // also (re)opens the camera parameters window.
+        toolMode_ = ToolCamera; activeTool_ = &cameraTool_;
+        showCameras_ = true;
     }
 }
 
@@ -519,6 +525,13 @@ void App::drawHelpOverlay() {
         }
         ImGui::BulletText("Right-click: inspect block");
         ImGui::BulletText("Del: remove selected block");
+    } else if (toolMode_ == ToolCamera) {
+        ImGui::Separator();
+        ImGui::TextUnformatted("Camera tool:");
+        ImGui::BulletText("Left-click camera frustum: select");
+        ImGui::BulletText("Left-click empty: deselect");
+        ImGui::BulletText("[ / ]: cycle cameras");
+        ImGui::BulletText("Parameters: Cameras window");
     } else {
         ImGui::Separator();
         ImGui::TextUnformatted("Vertex tool (wireframe):");
@@ -546,6 +559,11 @@ void App::drawHelpOverlay() {
         ImGui::Text("Blocks: %d  Mode: %s  Selected: %s",
                     build_.count(), mn[(int)build_.mode()],
                     selectedBlockId_ >= 0 ? std::to_string(selectedBlockId_).c_str() : "none");
+    } else if (toolMode_ == ToolCamera) {
+        const SceneCamera* sc = cameraRig_.findCamera(selectedCameraId_);
+        ImGui::Text("Cameras: %d   Selected: %s",
+                    (int)cameraRig_.cameras().size(),
+                    sc ? sc->name.c_str() : "none");
     } else {
         const char* dm = vertexEditor_.dragMode() == VertexEditor::FreeXYZ  ? "Free XYZ" :
                          vertexEditor_.dragMode() == VertexEditor::Vertical ? "Vertical" : "Normal";

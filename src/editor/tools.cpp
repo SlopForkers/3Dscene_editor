@@ -11,6 +11,27 @@
 #include <unordered_map>
 
 // ============================================================================
+// CameraTool — scene camera picking (cursor mode, no brush)
+// ============================================================================
+
+bool CameraTool::handleInput(App& app, float /*dt*/, const ImGuiIO& /*io*/,
+                             bool overUI, bool /*typing*/) {
+    if (g_input.mousePressed(Input::Left) && !overUI) {
+        glm::vec3 ro, rd;
+        app.cursorRay(ro, rd);
+        int id = app.pickSceneCamera(ro, rd);
+        app.selectedCameraId_ = id;   // -1 on empty click = deselect
+        if (id >= 0) app.showCameras_ = true;   // surface the params panel
+        return id >= 0;
+    }
+    return false;
+}
+
+void CameraTool::drawPanelContent(App& app) {
+    app.drawCameraToolContent();
+}
+
+// ============================================================================
 // TerrainTool — brush sculpt + vegetation painting
 // ============================================================================
 

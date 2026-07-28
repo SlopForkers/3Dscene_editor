@@ -54,6 +54,13 @@ private:
     std::unique_ptr<TerrainHeightsCommand> cmd_;
 };
 
+// Camera tool: pure cursor mode (no brush) — left-click picks a scene
+// camera in the viewport, parameters are edited in the Cameras window.
+struct CameraTool final : ITool {
+    bool handleInput(App& app, float dt, const ImGuiIO& io, bool overUI, bool typing) override;
+    void drawPanelContent(App& app) override;
+};
+
 struct BuildTool final : ITool {
     bool handleInput(App& app, float dt, const ImGuiIO& io, bool overUI, bool typing) override;
     void cancelDrag() override;

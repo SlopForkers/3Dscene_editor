@@ -38,7 +38,8 @@ public:
         CatCount
     };
 
-    enum ToolMode { ToolPaint = 0, ToolProp = 1, ToolVertex = 2, ToolBuild = 3 };
+    enum ToolMode { ToolPaint = 0, ToolProp = 1, ToolVertex = 2, ToolBuild = 3,
+                    ToolCamera = 4 };
 
     // Subsystems (public — tools and panels reference them directly).
     Camera camera_;
@@ -110,12 +111,18 @@ public:
     void drawInspectorContent();
     void drawCamerasContent();
     void drawCameraViewContent();
+    void drawCameraToolContent();
 
     // Scene camera interaction: jump the editor orbit camera to a scene
     // camera's pose; cycle steps through the rig ([ / ] hotkeys).
     void activateSceneCamera(int id);
     void cycleSceneCamera(int dir);
     void markCamPreviewsStale();
+    // Add a camera at the current editor view (Cameras panel + camera tool).
+    void addCameraFromView();
+    // Viewport picking (camera tool): nearest camera whose position/target/
+    // frustum corners are close to the ray; -1 when nothing is near.
+    int pickSceneCamera(const glm::vec3& ro, const glm::vec3& rd) const;
 
     bool saveScene(const std::string& path);
     bool loadScene(const std::string& path);
@@ -129,6 +136,7 @@ public:
     PropTool    propTool_;
     VertexTool  vertexTool_;
     BuildTool   buildTool_;
+    CameraTool  cameraTool_;
     ITool*      activeTool_ = &terrainTool_;
 
     int  toolMode_        = ToolPaint;
