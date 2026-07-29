@@ -15,6 +15,7 @@
 #include "spawn.h"
 #include "sim.h"
 #include "weather_sys.h"
+#include "material_graph.h"
 #include "gl_resource.h"
 #include "tools.h"
 #include "history.h"
@@ -41,7 +42,7 @@ public:
         CatFile,
         CatCameras, CatCamView,
         CatSpawns, CatSim,
-        CatWeather,
+        CatWeather, CatMaterials,
         CatCount
     };
 
@@ -74,6 +75,8 @@ public:
     SpawnManager spawns_;
     int selectedSpawnId_ = -1;
     SimController sim_;   // in-editor spawn logic simulation (Play/Stop)
+    MaterialLibrary materials_;
+    int selectedMaterialId_ = -1;
     History history_;
     std::vector<std::shared_ptr<Model>> modelLibrary_;
     Noise::Params noiseParams_;
@@ -130,6 +133,13 @@ public:
     void drawSpawnLogicContent();
     void drawSimulationContent();
     void drawWeatherContent();
+    void drawMaterialsContent();
+    void drawMaterialEdContent();
+    // Material graph edit with undo: capture before, mutate, then push.
+    void pushMaterialGraphEdit(int matId, const char* name, bool mergeable,
+                               const MaterialGraph& before);
+    void markMaterialPreviewDirty();
+    void rebakeMaterialPreview();
     // World (editor camera) -> main-window pixel position, for overlays.
     bool worldToScreen(const glm::vec3& p, float& sx, float& sy) const;
 
@@ -185,6 +195,8 @@ public:
     bool showSpawnLogic_= false;
     bool showSimulation_= false;
     bool showWeather_   = false;
+    bool showMaterials_ = false;
+    bool showMaterialEd_= false;
 
     // Scene cameras: frustum visualisation + preview window options.
     bool showCamFrustums_ = true;
@@ -282,6 +294,26 @@ private:
     void nodeEdParamsPanel(SpawnPoint& sp);
     void nodeEdCanvas(SpawnPoint& sp);
 
+    // Material Editor window state (same canvas pattern as Spawn Logic,
+    // with multi-input pins instead of true/false pins).
+    glm::vec2 matEdScroll_ = glm::vec2(0.0f);
+    int  matEdSelectedNode_ = -1;
+    int  matEdLinkFrom_ = -1;         // link-drag source node id (-1 = none)
+    int  matEdDragNode_ = -1;
+    glm::vec2 matEdDragOff_ = glm::vec2(0.0f);
+    bool matEdPanning_ = false;
+    int  matEdCtxNode_ = -1;
+    glm::vec2 matEdCtxPos_ = glm::vec2(0.0f);
+    bool matEdEditActive_ = false;
+    MaterialGraph matEdBefore_;
+    void matEdParamsPanel(MaterialGraph& g);
+    void matEdCanvas(MaterialGraph& g);
+
+    // Baked 128px preview of the selected material (debounced rebake).
+    GlTexture matPreviewTex_;
+    bool matPreviewDirty_ = false;
+    double matPreviewDirtyAt_ = 0.0;
+
     // Camera preview window: small per-camera FBOs, rendered one camera per
     // frame (round-robin) — never all cameras in a single frame.
     struct CamPreview {
@@ -315,6 +347,8 @@ private:
     void drawSpawnLogicWindow();
     void drawSimulationWindow();
     void drawWeatherWindow();
+    void drawMaterialsWindow();
+    void drawMaterialEdWindow();
     void buildDefaultLayout(unsigned int dockspaceId);
     void ensureViewportFbo();
 

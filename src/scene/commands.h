@@ -6,6 +6,7 @@
 #include "terrain.h"
 #include "scene_camera.h"
 #include "spawn.h"
+#include "material_graph.h"
 #include <glm/glm.hpp>
 #include <array>
 #include <string>
@@ -449,6 +450,67 @@ private:
     SpawnManager* spawns_;
     int id_;
     State before_, after_;
+    const char* name_;
+    bool mergeable_;
+};
+
+// Material added / removed (stores the whole graph so ids survive undo).
+class MaterialCommand : public Command {
+public:
+    MaterialCommand(MaterialLibrary& lib, const MaterialGraph& g,
+                    bool addedByUser, const char* name)
+        : mats_(&lib), graph_(g), added_(addedByUser), name_(name) {}
+
+    void redo() override {
+        if (added_) mats_->addMaterialWithId(graph_);
+        else mats_->removeMaterial(graph_.id);
+    }
+    void undo() override {
+        if (added_) mats_->removeMaterial(graph_.id);
+        else mats_->addMaterialWithId(graph_);
+    }
+    size_t memoryBytes() const override {
+        return sizeof(*this) + graph_.name.size() +
+               graph_.nodes.size() * sizeof(MatNode);
+    }
+    const char* name() const override { return name_; }
+
+private:
+    MaterialLibrary* mats_;
+    MaterialGraph graph_;
+    bool added_;
+    const char* name_;
+};
+
+// Material graph edit (structure, params, rename — the snapshot covers the
+// whole MaterialGraph). mergeable edits (param widgets) coalesce;
+// structural ops never merge.
+class MaterialGraphCommand : public Command {
+public:
+    MaterialGraphCommand(MaterialLibrary& lib, int matId,
+                         MaterialGraph before, MaterialGraph after,
+                         const char* name, bool mergeable)
+        : mats_(&lib), id_(matId), before_(std::move(before)),
+          after_(std::move(after)), name_(name), mergeable_(mergeable) {}
+
+    void redo() override { apply(after_); }
+    void undo() override { apply(before_); }
+    bool merge(const Command& next) override;
+    size_t memoryBytes() const override {
+        return sizeof(*this) +
+               (before_.nodes.size() + after_.nodes.size()) * sizeof(MatNode);
+    }
+    const char* name() const override { return name_; }
+
+private:
+    void apply(const MaterialGraph& g) {
+        MaterialGraph* cur = mats_->findMaterial(id_);
+        if (cur) *cur = g;   // snapshot includes id — it never drifts
+    }
+
+    MaterialLibrary* mats_;
+    int id_;
+    MaterialGraph before_, after_;
     const char* name_;
     bool mergeable_;
 };

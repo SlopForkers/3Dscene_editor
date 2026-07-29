@@ -65,6 +65,8 @@ void App::renderImGui() {
     drawSpawnLogicWindow();
     drawSimulationWindow();
     drawWeatherWindow();
+    drawMaterialsWindow();
+    drawMaterialEdWindow();
     if (showHelp_) drawHelpOverlay();
 
     // Brush value overlay: show radius/strength over the viewport image while
@@ -164,6 +166,7 @@ void App::buildDefaultLayout(unsigned int dockspaceId) {
     // docking them first keeps the Viewport the visible tab.
     ImGui::DockBuilderDockWindow("Camera View", remaining);
     ImGui::DockBuilderDockWindow("Spawn Logic", remaining);
+    ImGui::DockBuilderDockWindow("Material Editor", remaining);
     ImGui::DockBuilderDockWindow("Viewport", remaining);
     // Hidden-by-default windows get sensible homes for when they are shown.
     ImGui::DockBuilderDockWindow("Terrain", dockTools);
@@ -175,6 +178,7 @@ void App::buildDefaultLayout(unsigned int dockspaceId) {
     ImGui::DockBuilderDockWindow("Spawns", dockHierarchy);
     ImGui::DockBuilderDockWindow("Simulation", dockRight);
     ImGui::DockBuilderDockWindow("Weather", dockRight);
+    ImGui::DockBuilderDockWindow("Materials", dockRight);
     ImGui::DockBuilderFinish(id);
 }
 
@@ -290,6 +294,7 @@ void App::drawToolbarWindow() {
         { CatCamView, "Camera View",      &showCameraView_},
         { CatSim,     "Simulation",       &showSimulation_},
         { CatWeather, "Weather",          &showWeather_   },
+        { CatMaterials, "Materials",      &showMaterials_ },
     };
     for (auto& p : panels) {
         if (iconCell(icons::catIcon(p.cat), p.name, *p.flag))
@@ -525,6 +530,23 @@ void App::drawWeatherWindow() {
     if (!showWeather_) return;
     if (ImGui::Begin("Weather", &showWeather_))
         drawWeatherContent();
+    ImGui::End();
+}
+
+void App::drawMaterialsWindow() {
+    if (!showMaterials_) return;
+    // Debounced live preview rebake (slider drags coalesce into one bake).
+    if (matPreviewDirty_ && glfwGetTime() - matPreviewDirtyAt_ > 0.25)
+        rebakeMaterialPreview();
+    if (ImGui::Begin("Materials", &showMaterials_))
+        drawMaterialsContent();
+    ImGui::End();
+}
+
+void App::drawMaterialEdWindow() {
+    if (!showMaterialEd_) return;
+    if (ImGui::Begin("Material Editor", &showMaterialEd_))
+        drawMaterialEdContent();
     ImGui::End();
 }
 

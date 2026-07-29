@@ -109,7 +109,8 @@ target_link_libraries(dear_imgui PUBLIC glfw glad)
 # stb_image (texture loading, single header from the stb FetchContent)
 # ---------------------------------------------------------------------------
 add_library(stb_image STATIC
-    ${CMAKE_SOURCE_DIR}/src/platform/stb_image_impl.cpp)
+    ${CMAKE_SOURCE_DIR}/src/platform/stb_image_impl.cpp
+    ${CMAKE_SOURCE_DIR}/src/platform/stb_image_write_impl.cpp)
 target_include_directories(stb_image SYSTEM PUBLIC ${stb_SOURCE_DIR})
 target_link_libraries(stb_image PUBLIC glad)
 
@@ -161,6 +162,8 @@ set(SOURCES
     src/scene/weather.cpp
     src/scene/weather.h
     src/scene/weather_sys.h
+    src/scene/material_graph.cpp
+    src/scene/material_graph.h
     src/scene/history.cpp
     src/scene/history.h
     src/scene/commands.cpp
@@ -239,16 +242,21 @@ if(BUILD_TESTS)
         tests/test_spawn.cpp
         tests/test_sim.cpp
         tests/test_weather.cpp
+        tests/test_material_graph.cpp
         ${CMAKE_SOURCE_DIR}/src/scene/history.cpp
         ${CMAKE_SOURCE_DIR}/src/scene/scene_camera.cpp
         ${CMAKE_SOURCE_DIR}/src/scene/spawn.cpp
         ${CMAKE_SOURCE_DIR}/src/scene/sim.cpp
+        ${CMAKE_SOURCE_DIR}/src/scene/material_graph.cpp
+        ${CMAKE_SOURCE_DIR}/src/platform/sys_util.cpp
+        ${CMAKE_SOURCE_DIR}/src/platform/stb_image_impl.cpp
+        ${CMAKE_SOURCE_DIR}/src/platform/stb_image_write_impl.cpp
     )
     target_include_directories(tests PRIVATE
         ${CMAKE_SOURCE_DIR}/src
         ${CMAKE_SOURCE_DIR}/src/platform
         ${CMAKE_SOURCE_DIR}/src/scene
     )
-    target_link_libraries(tests PRIVATE glm doctest::doctest)
+    target_link_libraries(tests PRIVATE glm doctest::doctest stb_image)
     target_compile_options(tests PRIVATE -Wall -Wextra -Wpedantic)
 endif()

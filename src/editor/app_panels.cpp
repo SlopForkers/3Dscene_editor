@@ -1402,6 +1402,162 @@ void App::drawWeatherContent() {
     ImGui::TextDisabled("Saved in the scene; the game applies it.");
 }
 
+// --------------------------------------------------------------------------
+// Procedural materials: library, preview, bake/export/assign. The node
+// graph itself is edited in the Material Editor window.
+
+void App::drawMaterialsContent() {
+    ImGui::TextDisabled("Procedural materials");
+    ImGui::Separator();
+
+    if (ImGui::Button("Add material")) {
+        MaterialGraph g;
+        g.name = "Material " + std::to_string(materials_.materials().size() + 1);
+        int id = materials_.addMaterial(std::move(g));
+        MaterialGraph* added = materials_.findMaterial(id);
+        if (added) {
+            // Starter content: a SolidColor feeding the Output.
+            int col = added->addNode(MatNodeType::SolidColor,
+                                     glm::vec2(180.0f, 120.0f));
+            if (MatNode* c = added->findNode(col))
+                c->color = glm::vec4(0.6f, 0.55f, 0.5f, 1.0f);
+            if (MatNode* out = added->findNode(added->outputId))
+                out->in[0] = col;
+            history_.push(std::make_unique<MaterialCommand>(
+                materials_, *added, true, "Add Material"));
+            selectedMaterialId_ = id;
+            markMaterialPreviewDirty();
+        }
+    }
+    if (materials_.materials().empty()) {
+        ImGui::TextDisabled("(no materials yet)");
+        return;
+    }
+
+    for (const auto& g : materials_.materials()) {
+        ImGui::PushID(g.id);
+        char lbl[160];
+        std::snprintf(lbl, sizeof(lbl), "%s%s  (#%d)", g.name.c_str(),
+                      g.bakedPath.empty() ? "" : " [baked]", g.id);
+        if (ImGui::Selectable(lbl, g.id == selectedMaterialId_,
+                              ImGuiSelectableFlags_AllowDoubleClick)) {
+            if (selectedMaterialId_ != g.id) {
+                selectedMaterialId_ = g.id;
+                markMaterialPreviewDirty();
+            }
+        }
+        if (ImGui::IsItemHovered() &&
+            ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left))
+            showMaterialEd_ = true;
+        ImGui::PopID();
+    }
+
+    MaterialGraph* sel = materials_.findMaterial(selectedMaterialId_);
+    if (!sel) {
+        selectedMaterialId_ = -1;
+        return;
+    }
+    ImGui::Separator();
+
+    // Rename (snapshot undo, mergeable).
+    char nm[64];
+    std::snprintf(nm, sizeof(nm), "%s", sel->name.c_str());
+    if (ImGui::InputText("Name", nm, sizeof(nm))) {
+        if (!matEdEditActive_) {
+            matEdEditActive_ = true;
+            matEdBefore_ = *sel;
+        }
+        sel->name = nm;
+    }
+    if (ImGui::IsItemDeactivatedAfterEdit() && matEdEditActive_) {
+        pushMaterialGraphEdit(sel->id, "Rename Material", true, matEdBefore_);
+        matEdEditActive_ = false;
+    }
+
+    // Preview (bakes at 128 px, debounced after edits).
+    ImGui::TextDisabled("Preview");
+    if (matPreviewTex_.id() != 0) {
+        ImGui::Image((ImTextureID)(intptr_t)matPreviewTex_.id(),
+                     ImVec2(128.0f, 128.0f), ImVec2(0, 1), ImVec2(1, 0));
+    } else {
+        ImGui::Dummy(ImVec2(128.0f, 128.0f));
+        markMaterialPreviewDirty();
+    }
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("128 px live preview (rebakes after edits)");
+
+    static int s_bakeSize = 512;
+    const char* sizes[] = { "256", "512", "1024" };
+    int sizeIdx = s_bakeSize == 256 ? 0 : s_bakeSize == 1024 ? 2 : 1;
+    ImGui::SetNextItemWidth(90.0f);
+    if (ImGui::Combo("Bake size", &sizeIdx, sizes, 3))
+        s_bakeSize = sizeIdx == 0 ? 256 : sizeIdx == 2 ? 1024 : 512;
+    if (ImGui::Button("Bake & Export PNG...")) {
+        std::string path = saveFileDialog("PNG image", "*.png", "png",
+                                          nativeWindow());
+        if (!path.empty()) {
+            if (path.size() < 4 ||
+                path.substr(path.size() - 4) != ".png")
+                path += ".png";
+            std::vector<uint8_t> pix;
+            if (bakeMaterial(*sel, s_bakeSize, s_bakeSize, pix) &&
+                writePng(path, s_bakeSize, s_bakeSize, pix)) {
+                MaterialGraph before = *sel;
+                sel->bakedPath = path;
+                pushMaterialGraphEdit(sel->id, "Bake Material", false, before);
+            } else {
+                std::cerr << "Material bake/export failed: " << path << "\n";
+            }
+        }
+    }
+    if (ImGui::Button("Edit nodes...")) showMaterialEd_ = true;
+    ImGui::SameLine();
+    if (ImGui::Button("Delete")) {
+        MaterialGraph copy = *sel;   // copy BEFORE removeMaterial
+        int id = sel->id;
+        history_.push(std::make_unique<MaterialCommand>(
+            materials_, copy, false, "Delete Material"));
+        materials_.removeMaterial(id);
+        selectedMaterialId_ = -1;
+    }
+
+    // Assign the baked PNG into the existing texture pipelines.
+    ImGui::Separator();
+    if (sel->bakedPath.empty()) {
+        ImGui::TextDisabled("Export a bake first, then assign it:");
+        return;
+    }
+    ImGui::TextWrapped("Baked: %s",
+        std::filesystem::path(sel->bakedPath).filename().string().c_str());
+    if (terrain_.layerCount() > 0) {
+        static int s_assignLayer = 0;
+        s_assignLayer = std::clamp(s_assignLayer, 0,
+                                   terrain_.layerCount() - 1);
+        ImGui::SetNextItemWidth(140.0f);
+        ImGui::Combo("##assignlayer", &s_assignLayer,
+                     [](void* data, int idx, const char** out) -> bool {
+                         auto* t = static_cast<Terrain*>(data);
+                         *out = t->layers()[idx].name.c_str();
+                         return true;
+                     }, &terrain_, terrain_.layerCount());
+        ImGui::SameLine();
+        if (ImGui::Button("Apply to layer albedo")) {
+            int li = s_assignLayer;
+            auto cmd = std::make_unique<LayerTextureCommand>(terrain_, li,
+                                                             false);
+            cmd->oldPix = terrain_.layers()[li].albedoPix;
+            cmd->oldPath = terrain_.layers()[li].albedoPath;
+            if (terrain_.loadLayerAlbedo(li, sel->bakedPath)) {
+                cmd->newPix = terrain_.layers()[li].albedoPix;
+                cmd->newPath = terrain_.layers()[li].albedoPath;
+                history_.push(std::move(cmd));
+            }
+        }
+    }
+    if (ImGui::Button("Add to block textures"))
+        build_.loadBlockTexture(sel->bakedPath);
+}
+
 void App::drawCameraViewContent() {
     ImGui::Checkbox("Live previews", &camPreviewsLive_);
     ImGui::SameLine();
@@ -1466,6 +1622,463 @@ void App::drawCameraViewContent() {
         ImGui::PopID();
     }
     ImGui::EndTable();
+}
+
+// --------------------------------------------------------------------------
+// Material Editor: node canvas for procedural material graphs (same
+// hand-rolled ImDrawList pattern as Spawn Logic, with multi-input pins).
+// All edits go through MaterialGraphCommand (undo).
+
+static std::string matNodeSummary(const MatNode& n) {
+    char buf[96];
+    switch (n.type) {
+        case MatNodeType::Image:
+            return n.path.empty() ? std::string("(no image)")
+                : std::filesystem::path(n.path).filename().string();
+        case MatNodeType::Noise:
+            std::snprintf(buf, sizeof(buf), "scale %.1f seed %d",
+                          n.p[0], n.ip[1]);
+            return buf;
+        case MatNodeType::Checker:
+            std::snprintf(buf, sizeof(buf), "scale %.1f", n.p[0]);
+            return buf;
+        case MatNodeType::Mix:
+            if (n.in[2] < 0) {
+                std::snprintf(buf, sizeof(buf), "fac %.2f", n.p[0]);
+                return buf;
+            }
+            return "fac (pin)";
+        case MatNodeType::BrightContrast:
+            std::snprintf(buf, sizeof(buf), "%+.2f x%.2f", n.p[0], n.p[1]);
+            return buf;
+        default:
+            return "";
+    }
+}
+
+void App::drawMaterialEdContent() {
+    MaterialGraph* g = materials_.findMaterial(selectedMaterialId_);
+    if (!g) {
+        ImGui::TextDisabled("Select a material first (Materials panel).");
+        return;
+    }
+    static int s_lastMatId = -1;
+    if (s_lastMatId != g->id) {
+        s_lastMatId = g->id;
+        matEdSelectedNode_ = -1;
+        matEdLinkFrom_ = -1;
+        matEdDragNode_ = -1;
+        matEdScroll_ = glm::vec2(0.0f);
+    }
+
+    ImGui::Text("Material: %s", g->name.c_str());
+    ImGui::SameLine();
+    if (ImGui::Button("Template: Noise texture")) {
+        MaterialGraph before = *g;
+        const MatNode* out = g->findNode(g->outputId);
+        glm::vec2 base = out ? out->uiPos + glm::vec2(-460.0f, -20.0f)
+                             : glm::vec2(40.0f, 40.0f);
+        int nz = g->addNode(MatNodeType::Noise, base);
+        int bc = g->addNode(MatNodeType::BrightContrast,
+                            base + glm::vec2(210.0f, 0.0f));
+        if (MatNode* n = g->findNode(nz)) {
+            n->p[0] = 6.0f; n->p[1] = 0.5f; n->p[2] = 2.0f;
+            n->ip[0] = (int)Noise::Perlin; n->ip[1] = 1; n->ip[2] = 5;
+        }
+        if (MatNode* n = g->findNode(bc)) {
+            n->p[0] = 0.05f; n->p[1] = 1.6f;
+            n->in[0] = nz;
+        }
+        if (MatNode* o = g->findNode(g->outputId)) o->in[0] = bc;
+        matEdSelectedNode_ = nz;
+        pushMaterialGraphEdit(g->id, "Template: Noise", false, before);
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Reset view")) matEdScroll_ = glm::vec2(0.0f);
+    ImGui::Separator();
+
+    ImGui::BeginChild("##matedparams", ImVec2(260.0f, 0.0f), true);
+    matEdParamsPanel(*g);
+    ImGui::EndChild();
+    ImGui::SameLine();
+    ImGui::BeginChild("##matedcanvas", ImVec2(0.0f, 0.0f), true,
+                      ImGuiWindowFlags_NoScrollbar |
+                      ImGuiWindowFlags_NoScrollWithMouse);
+    matEdCanvas(*g);
+    ImGui::EndChild();
+}
+
+void App::matEdParamsPanel(MaterialGraph& g) {
+    ImGui::TextDisabled("Selected node");
+    ImGui::Separator();
+    MatNode* n = g.findNode(matEdSelectedNode_);
+    if (!n) {
+        ImGui::TextWrapped("Click a node to edit it.");
+        ImGui::Spacing();
+        ImGui::TextWrapped("Right-click canvas: add node. Drag from the "
+                           "output pin to an input pin to link. Middle-drag "
+                           "pans. Right-click a node: delete/unlink.");
+        return;
+    }
+
+    auto track = [&]() {
+        if (ImGui::IsItemActivated() && !matEdEditActive_) {
+            matEdEditActive_ = true;
+            matEdBefore_ = g;
+        }
+        if (ImGui::IsItemDeactivatedAfterEdit() && matEdEditActive_) {
+            pushMaterialGraphEdit(g.id, "Edit Node", true, matEdBefore_);
+            matEdEditActive_ = false;
+        }
+    };
+
+    ImGui::Text("%s #%d", matNodeTypeName((int)n->type), n->id);
+    ImGui::Separator();
+    switch (n->type) {
+        case MatNodeType::Output:
+            ImGui::TextWrapped("The material's albedo. Feed it any node.");
+            break;
+        case MatNodeType::Image: {
+            ImGui::TextWrapped("File: %s",
+                n->path.empty() ? "(none)"
+                    : std::filesystem::path(n->path).filename().string().c_str());
+            if (ImGui::Button("Load image...")) {
+                MaterialGraph before = g;
+                std::string p = openFileDialog(
+                    "Image", "*.png;*.jpg;*.jpeg;*.tga;*.bmp", nativeWindow());
+                if (!p.empty()) {
+                    n->path = p;
+                    pushMaterialGraphEdit(g.id, "Edit Node", false, before);
+                }
+            }
+            ImGui::DragFloat("Tile U", &n->p[0], 0.02f, 0.01f, 16.0f);
+            track();
+            ImGui::DragFloat("Tile V", &n->p[1], 0.02f, 0.01f, 16.0f);
+            track();
+            ImGui::DragFloat("Offset U", &n->p[2], 0.005f, -4.0f, 4.0f);
+            track();
+            ImGui::DragFloat("Offset V", &n->p[3], 0.005f, -4.0f, 4.0f);
+            track();
+            break;
+        }
+        case MatNodeType::SolidColor:
+            ImGui::ColorEdit4("Color", &n->color[0]);
+            track();
+            break;
+        case MatNodeType::Noise: {
+            const char* types[] = { "Perlin", "Simplex", "Value", "Worley",
+                                    "Ridge" };
+            MaterialGraph beforeCombo = g;
+            if (ImGui::Combo("Type", &n->ip[0], types, 5))
+                pushMaterialGraphEdit(g.id, "Edit Node", true, beforeCombo);
+            ImGui::InputInt("Seed", &n->ip[1]);
+            track();
+            ImGui::SliderInt("Octaves", &n->ip[2], 1, 8);
+            track();
+            ImGui::DragFloat("Scale", &n->p[0], 0.05f, 0.1f, 64.0f);
+            track();
+            ImGui::DragFloat("Persistence", &n->p[1], 0.01f, 0.1f, 1.0f);
+            track();
+            ImGui::DragFloat("Lacunarity", &n->p[2], 0.01f, 1.0f, 4.0f);
+            track();
+            break;
+        }
+        case MatNodeType::Checker:
+            ImGui::DragFloat("Scale", &n->p[0], 0.1f, 0.5f, 64.0f);
+            track();
+            break;
+        case MatNodeType::Gradient:
+            ImGui::SliderAngle("Angle", &n->p[0], -180.0f, 180.0f);
+            track();
+            break;
+        case MatNodeType::Mix:
+            if (n->in[2] < 0) {
+                ImGui::SliderFloat("Factor", &n->p[0], 0.0f, 1.0f);
+                track();
+            } else {
+                ImGui::TextDisabled("Factor driven by pin");
+            }
+            break;
+        case MatNodeType::BrightContrast:
+            ImGui::SliderFloat("Brightness", &n->p[0], -1.0f, 1.0f);
+            track();
+            ImGui::SliderFloat("Contrast", &n->p[1], 0.0f, 4.0f);
+            track();
+            break;
+        case MatNodeType::HeightToNormal:
+            ImGui::DragFloat("Strength", &n->p[0], 0.05f, 0.1f, 16.0f);
+            track();
+            ImGui::TextWrapped("Bake the result and use it as a normal map "
+                               "source.");
+            break;
+        default:
+            ImGui::TextDisabled("(no parameters)");
+            break;
+    }
+
+    ImGui::Separator();
+    if (n->type != MatNodeType::Output && ImGui::Button("Delete node")) {
+        MaterialGraph before = g;
+        int id = n->id;
+        g.removeNode(id);
+        pushMaterialGraphEdit(g.id, "Delete Node", false, before);
+        if (matEdSelectedNode_ == id) matEdSelectedNode_ = -1;
+    }
+}
+
+void App::matEdCanvas(MaterialGraph& g) {
+    const float NODE_W = 176.0f;
+    const float OUT_W = 130.0f;
+    const float TITLE_H = 20.0f;
+    const float PIN_R = 6.0f;
+
+    ImVec2 origin = ImGui::GetCursorScreenPos();
+    ImVec2 avail  = ImGui::GetContentRegionAvail();
+    ImGui::InvisibleButton("##matcanvas", avail,
+                           ImGuiButtonFlags_MouseButtonLeft |
+                           ImGuiButtonFlags_MouseButtonRight |
+                           ImGuiButtonFlags_MouseButtonMiddle);
+    const bool hovered = ImGui::IsItemHovered();
+    const ImVec2 mouse = ImGui::GetIO().MousePos;
+    const glm::vec2 mCanvas(mouse.x - origin.x + matEdScroll_.x,
+                            mouse.y - origin.y + matEdScroll_.y);
+
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    dl->PushClipRect(origin, ImVec2(origin.x + avail.x, origin.y + avail.y),
+                     true);
+
+    auto nodeSize = [&](const MatNode& n) {
+        float w = n.type == MatNodeType::Output ? OUT_W : NODE_W;
+        int rows = std::max(1, matNodeInputCount(n.type));
+        return ImVec2(w, TITLE_H + rows * 16.0f + 22.0f);
+    };
+    auto nodeP0 = [&](const MatNode& n) {
+        return ImVec2(origin.x + n.uiPos.x - matEdScroll_.x,
+                      origin.y + n.uiPos.y - matEdScroll_.y);
+    };
+    auto inPin = [&](const MatNode& n, int k) {
+        ImVec2 p0 = nodeP0(n);
+        return ImVec2(p0.x, p0.y + TITLE_H + 9.0f + k * 16.0f);
+    };
+    auto outPin = [&](const MatNode& n) {
+        ImVec2 p0 = nodeP0(n);
+        ImVec2 sz = nodeSize(n);
+        return ImVec2(p0.x + sz.x, p0.y + sz.y * 0.5f);
+    };
+    auto dist2 = [](ImVec2 a, ImVec2 b) {
+        float dx = a.x - b.x, dy = a.y - b.y;
+        return dx * dx + dy * dy;
+    };
+    auto hitNode = [&](ImVec2 p) -> int {
+        for (const auto& n : g.nodes) {
+            ImVec2 p0 = nodeP0(n);
+            ImVec2 sz = nodeSize(n);
+            if (p.x >= p0.x && p.x <= p0.x + sz.x &&
+                p.y >= p0.y && p.y <= p0.y + sz.y) return n.id;
+        }
+        return -1;
+    };
+
+    // --- Interactions ---
+    if (matEdLinkFrom_ >= 0) {
+        if (!ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
+            // Drop on an input pin connects (with cycle check).
+            int target = -1, targetPin = -1;
+            float bestD = (PIN_R + 5.0f) * (PIN_R + 5.0f);
+            for (const auto& n : g.nodes) {
+                if (n.type == MatNodeType::Output && n.id == matEdLinkFrom_)
+                    continue;
+                int nIn = matNodeInputCount(n.type);
+                for (int k = 0; k < nIn; ++k) {
+                    float d = dist2(mouse, inPin(n, k));
+                    if (d < bestD) { bestD = d; target = n.id; targetPin = k; }
+                }
+            }
+            if (target >= 0 && target != matEdLinkFrom_ &&
+                !matGraphReachable(g, matEdLinkFrom_, target)) {
+                MaterialGraph before = g;
+                if (MatNode* t = g.findNode(target))
+                    t->in[targetPin] = matEdLinkFrom_;
+                pushMaterialGraphEdit(g.id, "Link Nodes", false, before);
+            }
+            matEdLinkFrom_ = -1;
+        }
+    } else if (matEdDragNode_ >= 0) {
+        if (ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
+            if (MatNode* n = g.findNode(matEdDragNode_)) {
+                n->uiPos.x = std::round((mCanvas.x - matEdDragOff_.x) / 8.0f) * 8.0f;
+                n->uiPos.y = std::round((mCanvas.y - matEdDragOff_.y) / 8.0f) * 8.0f;
+            }
+        } else {
+            bool moved = false;
+            for (const auto& bn : matEdBefore_.nodes) {
+                const MatNode* cur = g.findNode(bn.id);
+                if (cur && cur->uiPos != bn.uiPos) { moved = true; break; }
+            }
+            if (moved)
+                pushMaterialGraphEdit(g.id, "Move Node", false, matEdBefore_);
+            matEdDragNode_ = -1;
+        }
+    } else if (matEdPanning_) {
+        if (ImGui::IsMouseDown(ImGuiMouseButton_Middle)) {
+            matEdScroll_.x -= ImGui::GetIO().MouseDelta.x;
+            matEdScroll_.y -= ImGui::GetIO().MouseDelta.y;
+        } else {
+            matEdPanning_ = false;
+        }
+    } else if (hovered) {
+        if (ImGui::IsMouseClicked(ImGuiMouseButton_Middle))
+            matEdPanning_ = true;
+        if (ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
+            // Priority: out-pin > node body > empty.
+            int pinNode = -1;
+            float bestD = (PIN_R + 5.0f) * (PIN_R + 5.0f);
+            for (const auto& n : g.nodes) {
+                if (n.type == MatNodeType::Output) continue;
+                float d = dist2(mouse, outPin(n));
+                if (d < bestD) { bestD = d; pinNode = n.id; }
+            }
+            if (pinNode >= 0) {
+                matEdLinkFrom_ = pinNode;
+            } else {
+                int hit = hitNode(mouse);
+                matEdSelectedNode_ = hit;
+                if (hit >= 0) {
+                    matEdDragNode_ = hit;
+                    matEdBefore_ = g;
+                    const MatNode* n = g.findNode(hit);
+                    matEdDragOff_ = mCanvas - n->uiPos;
+                }
+            }
+        }
+        if (ImGui::IsMouseClicked(ImGuiMouseButton_Right)) {
+            matEdCtxNode_ = hitNode(mouse);
+            matEdCtxPos_ = mCanvas;
+            ImGui::OpenPopup("##matctx");
+        }
+    }
+
+    // Context popup (add / delete / unlink).
+    if (ImGui::BeginPopup("##matctx")) {
+        if (matEdCtxNode_ >= 0) {
+            MatNode* n = g.findNode(matEdCtxNode_);
+            if (n && n->type != MatNodeType::Output) {
+                if (ImGui::MenuItem("Delete node")) {
+                    MaterialGraph before = g;
+                    int id = n->id;
+                    g.removeNode(id);
+                    pushMaterialGraphEdit(g.id, "Delete Node", false, before);
+                    if (matEdSelectedNode_ == id) matEdSelectedNode_ = -1;
+                }
+                if (ImGui::MenuItem("Unlink inputs")) {
+                    MaterialGraph before = g;
+                    for (int& inp : n->in) inp = -1;
+                    pushMaterialGraphEdit(g.id, "Unlink", false, before);
+                }
+            } else {
+                ImGui::TextDisabled("Output node (fixed)");
+            }
+        } else {
+            for (int t = 1; t < (int)MatNodeType::Count; ++t) {
+                char lbl[64];
+                std::snprintf(lbl, sizeof(lbl), "Add: %s", matNodeTypeName(t));
+                if (ImGui::MenuItem(lbl)) {
+                    MaterialGraph before = g;
+                    int nid = g.addNode((MatNodeType)t, matEdCtxPos_);
+                    // Sensible defaults per type.
+                    if (MatNode* nn = g.findNode(nid)) {
+                        switch ((MatNodeType)t) {
+                            case MatNodeType::Image:
+                                nn->p[0] = 1.0f; nn->p[1] = 1.0f; break;
+                            case MatNodeType::Noise:
+                                nn->p[0] = 4.0f; nn->p[1] = 0.5f;
+                                nn->p[2] = 2.0f;
+                                nn->ip[0] = 0; nn->ip[1] = 1; nn->ip[2] = 4;
+                                break;
+                            case MatNodeType::Checker: nn->p[0] = 8.0f; break;
+                            case MatNodeType::Mix:     nn->p[0] = 0.5f; break;
+                            case MatNodeType::BrightContrast:
+                                nn->p[0] = 0.0f; nn->p[1] = 1.0f; break;
+                            case MatNodeType::HeightToNormal:
+                                nn->p[0] = 2.0f; break;
+                            default: break;
+                        }
+                    }
+                    matEdSelectedNode_ = nid;
+                    pushMaterialGraphEdit(g.id, "Add Node", false, before);
+                }
+            }
+        }
+        ImGui::EndPopup();
+    }
+
+    // --- Drawing ---
+    const float grid = 32.0f;
+    ImU32 gridCol = IM_COL32(255, 255, 255, 13);
+    float sx = std::fmod(matEdScroll_.x, grid);
+    float sy = std::fmod(matEdScroll_.y, grid);
+    for (float x = origin.x - sx; x < origin.x + avail.x; x += grid)
+        for (float y = origin.y - sy; y < origin.y + avail.y; y += grid)
+            dl->AddCircleFilled(ImVec2(x, y), 1.0f, gridCol);
+
+    // Links (below nodes).
+    auto bezier = [&](ImVec2 a, ImVec2 b, ImU32 col) {
+        float dx = std::max(40.0f, std::abs(b.x - a.x) * 0.5f);
+        dl->AddBezierCubic(a, ImVec2(a.x + dx, a.y),
+                           ImVec2(b.x - dx, b.y), b, col, 2.5f);
+    };
+    for (const auto& n : g.nodes) {
+        int nIn = matNodeInputCount(n.type);
+        for (int k = 0; k < nIn; ++k) {
+            if (n.in[k] < 0) continue;
+            const MatNode* src = g.findNode(n.in[k]);
+            if (!src) continue;
+            bezier(outPin(*src), inPin(n, k), IM_COL32(200, 190, 120, 230));
+        }
+    }
+    if (matEdLinkFrom_ >= 0) {
+        if (const MatNode* src = g.findNode(matEdLinkFrom_))
+            bezier(outPin(*src), mouse, IM_COL32(255, 230, 110, 255));
+    }
+
+    // Nodes.
+    for (const auto& n : g.nodes) {
+        ImVec2 p0 = nodeP0(n);
+        ImVec2 sz = nodeSize(n);
+        ImVec2 p1(p0.x + sz.x, p0.y + sz.y);
+        bool isOut = n.type == MatNodeType::Output;
+        ImU32 titleCol = isOut ? IM_COL32(120, 85, 155, 255)
+                               : IM_COL32(70, 120, 90, 255);
+        dl->AddRectFilled(p0, p1, IM_COL32(37, 39, 47, 255), 6.0f);
+        dl->AddRectFilled(p0, ImVec2(p1.x, p0.y + TITLE_H), titleCol, 6.0f,
+                          ImDrawFlags_RoundCornersTop);
+        dl->AddRect(p0, p1,
+                    n.id == matEdSelectedNode_ ? IM_COL32(255, 230, 110, 255)
+                                               : IM_COL32(18, 18, 22, 255),
+                    6.0f, 0, n.id == matEdSelectedNode_ ? 2.0f : 1.0f);
+        dl->AddText(ImVec2(p0.x + 7, p0.y + 3), IM_COL32(255, 255, 255, 255),
+                    matNodeTypeName((int)n.type));
+
+        std::string sum = matNodeSummary(n);
+        int nIn = matNodeInputCount(n.type);
+        // Input pin rows with labels.
+        for (int k = 0; k < nIn; ++k) {
+            ImVec2 ip = inPin(n, k);
+            dl->AddCircleFilled(ip, PIN_R, IM_COL32(205, 205, 215, 255));
+            dl->AddCircle(ip, PIN_R, IM_COL32(18, 18, 22, 255), 0, 1.5f);
+            dl->AddText(ImVec2(ip.x + 10, ip.y - 7),
+                        IM_COL32(170, 175, 185, 255),
+                        matNodeInputName(n.type, k));
+        }
+        if (!sum.empty()) {
+            ImVec2 tp(p0.x + 8, p0.y + TITLE_H + std::max(1, nIn) * 16.0f + 4.0f);
+            dl->AddText(tp, IM_COL32(158, 163, 175, 255), sum.c_str());
+        }
+        if (!isOut)
+            dl->AddCircleFilled(outPin(n), PIN_R, IM_COL32(240, 210, 90, 255));
+    }
+
+    dl->PopClipRect();
 }
 
 // --------------------------------------------------------------------------

@@ -347,6 +347,20 @@ static void CatWeather(ImDrawList* dl, ImVec2 p0, ImVec2 p1, ImU32 col) {
 
 
 
+static void CatMaterials(ImDrawList* dl, ImVec2 p0, ImVec2 p1, ImU32 col) {
+    // Artist palette: circle outline with three paint blobs and a hole.
+    float w = p1.x - p0.x;
+    ImVec2 c((p0.x + p1.x) * 0.5f, (p0.y + p1.y) * 0.5f);
+    float r = w * 0.36f;
+    dl->AddCircle(c, r, col, 0, 2.0f);
+    dl->AddCircleFilled(ImVec2(c.x - r * 0.35f, c.y - r * 0.25f), r * 0.16f, col);
+    dl->AddCircleFilled(ImVec2(c.x + r * 0.30f, c.y - r * 0.35f), r * 0.16f, col);
+    dl->AddCircleFilled(ImVec2(c.x + r * 0.15f, c.y + r * 0.30f), r * 0.16f, col);
+    dl->AddCircle(ImVec2(c.x - r * 0.30f, c.y + r * 0.35f), r * 0.15f, col, 0, 1.6f);
+}
+
+
+
 IconFn brushIcon(int type) {
     switch (type) {
         case Terrain::BrushParams::Raise:    return &Raise;
@@ -379,6 +393,7 @@ IconFn catIcon(int cat) {
         case App::CatSpawns:     return &CatSpawns;
         case App::CatSim:        return &CatSim;
         case App::CatWeather:    return &CatWeather;
+        case App::CatMaterials:  return &CatMaterials;
         default: return nullptr;
     }
 }
@@ -401,6 +416,7 @@ const char* catName(int cat) {
         case App::CatSpawns:     return "Spawns";
         case App::CatSim:        return "Simulation";
         case App::CatWeather:    return "Weather";
+        case App::CatMaterials:  return "Materials";
         default: return "?";
     }
 }

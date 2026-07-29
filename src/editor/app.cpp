@@ -258,6 +258,7 @@ void App::shutdown() {
         viewportColor_.destroy();
         if (viewportDepthRbo_) { glDeleteRenderbuffers(1, &viewportDepthRbo_); viewportDepthRbo_ = 0; }
         noiseTex_.destroy();
+        matPreviewTex_.destroy();
         for (auto& p : camPreviews_) {
             if (p.fbo)      glDeleteFramebuffers(1, &p.fbo);
             if (p.depthRbo) glDeleteRenderbuffers(1, &p.depthRbo);
@@ -369,6 +370,8 @@ void App::undoEdit() {
         selectedCameraId_ = -1;
     if (selectedSpawnId_ >= 0 && !spawns_.findSpawn(selectedSpawnId_))
         selectedSpawnId_ = -1;
+    if (selectedMaterialId_ >= 0 && !materials_.findMaterial(selectedMaterialId_))
+        selectedMaterialId_ = -1;
     markCamPreviewsStale();
 }
 
@@ -382,6 +385,8 @@ void App::redoEdit() {
         selectedCameraId_ = -1;
     if (selectedSpawnId_ >= 0 && !spawns_.findSpawn(selectedSpawnId_))
         selectedSpawnId_ = -1;
+    if (selectedMaterialId_ >= 0 && !materials_.findMaterial(selectedMaterialId_))
+        selectedMaterialId_ = -1;
     markCamPreviewsStale();
 }
 
@@ -1285,6 +1290,37 @@ void App::startCamAnim(const glm::vec3& target, float yaw, float pitch,
     camAnimDur_ = std::max(duration, 0.01f);
     camAnimT_ = 0.0f;
     camAnimActive_ = true;
+}
+
+void App::pushMaterialGraphEdit(int matId, const char* name, bool mergeable,
+                                const MaterialGraph& before) {
+    MaterialGraph* g = materials_.findMaterial(matId);
+    if (!g) return;
+    history_.push(std::make_unique<MaterialGraphCommand>(
+        materials_, matId, before, *g, name, mergeable));
+    markMaterialPreviewDirty();
+}
+
+void App::markMaterialPreviewDirty() {
+    matPreviewDirty_ = true;
+    matPreviewDirtyAt_ = glfwGetTime();
+}
+
+void App::rebakeMaterialPreview() {
+    matPreviewDirty_ = false;
+    MaterialGraph* g = materials_.findMaterial(selectedMaterialId_);
+    if (!g) return;
+    std::vector<uint8_t> pix;
+    if (!bakeMaterial(*g, 128, 128, pix)) return;
+    if (!matPreviewTex_.id()) matPreviewTex_.create();
+    glBindTexture(GL_TEXTURE_2D, matPreviewTex_);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, 128, 128, 0, GL_RGBA,
+                 GL_UNSIGNED_BYTE, pix.data());
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    glBindTexture(GL_TEXTURE_2D, 0);
 }
 
 void App::updateCamAnim(float dt) {

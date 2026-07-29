@@ -6,6 +6,7 @@
 #include "spawn.h"
 #include "sim.h"
 #include "weather.h"
+#include "material_graph.h"
 #include "prop.h"
 #include "detail.h"
 #include "build.h"
@@ -178,6 +179,37 @@ bool saveScene(const std::string& path, const SceneContext& ctx) {
     wj["windStrength"] = ctx.weather.windStrength;
     wj["snowCover"] = ctx.weather.snowCover;
     root["weather"] = wj;
+
+    // Procedural material graphs (bakes are exported as PNGs and referenced
+    // by path; the graphs persist for further editing).
+    nlohmann::json matsArr = nlohmann::json::array();
+    for (const auto& g : ctx.materials.materials()) {
+        nlohmann::json gj = nlohmann::json::object();
+        gj["id"] = g.id;
+        gj["name"] = g.name;
+        gj["bakedPath"] = relPath(g.bakedPath, baseDir);
+        gj["outputId"] = g.outputId;
+        nlohmann::json nodesArr = nlohmann::json::array();
+        for (const auto& n : g.nodes) {
+            nlohmann::json nj = nlohmann::json::object();
+            nj["id"] = n.id;
+            nj["type"] = (int)n.type;
+            for (int k = 0; k < 4; ++k) {
+                nj["in" + std::to_string(k)] = n.in[k];
+                nj["p" + std::to_string(k)] = n.p[k];
+                nj["ip" + std::to_string(k)] = n.ip[k];
+            }
+            nj["cr"] = n.color.r; nj["cg"] = n.color.g;
+            nj["cb"] = n.color.b; nj["ca"] = n.color.a;
+            nj["path"] = relPath(n.path, baseDir);
+            nj["ux"] = n.uiPos.x;
+            nj["uy"] = n.uiPos.y;
+            nodesArr.push_back(nj);
+        }
+        gj["nodes"] = nodesArr;
+        matsArr.push_back(gj);
+    }
+    root["materials"] = matsArr;
 
     // Props.
     nlohmann::json propsArr = nlohmann::json::array();
@@ -436,6 +468,7 @@ bool loadScene(const std::string& path, SceneContext& ctx) {
     ctx.build.clear();
     ctx.cameraRig.clear();
     ctx.spawns.clear();
+    ctx.materials.clear();
     ctx.modelLibrary.clear();
     ctx.selectedBlockId = -1;
     ctx.selectedBlockFace = -1;
@@ -667,6 +700,67 @@ bool loadScene(const std::string& path, SceneContext& ctx) {
         w.windAngle = wj.value("windAngle", 0.6f);
         w.windStrength = std::clamp(wj.value("windStrength", 0.0f), 0.0f, 50.0f);
         w.snowCover = std::clamp(wj.value("snowCover", 0.0f), 0.0f, 1.0f);
+    }
+
+    // --- Material graphs ---
+    const auto& mats = root["materials"];
+    if (mats.is_array()) {
+        for (size_t i = 0; i < mats.size(); ++i) {
+            const auto& gj = mats[i];
+            MaterialGraph g;
+            g.name = gj.value("name", "Material");
+            std::string bp = gj.value("bakedPath", "");
+            g.bakedPath = bp.empty() ? "" : absPath(bp, baseDir);
+            g.outputId = gj.value("outputId", -1);
+            int maxNodeId = -1;
+            const auto& nodes = gj["nodes"];
+            if (nodes.is_array()) {
+                for (size_t k = 0; k < nodes.size(); ++k) {
+                    const auto& nj = nodes[k];
+                    MatNode n;
+                    n.id = nj.value("id", -1);
+                    if (n.id < 0) continue;
+                    int t = nj.value("type", (int)MatNodeType::SolidColor);
+                    n.type = (t >= 0 && t < (int)MatNodeType::Count)
+                                 ? (MatNodeType)t : MatNodeType::SolidColor;
+                    for (int c = 0; c < 4; ++c) {
+                        n.in[c] = nj.value("in" + std::to_string(c), -1);
+                        n.p[c]  = nj.value("p" + std::to_string(c), 0.0f);
+                        n.ip[c] = nj.value("ip" + std::to_string(c), 0);
+                    }
+                    n.color = glm::vec4(nj.value("cr", 1.0f), nj.value("cg", 1.0f),
+                                        nj.value("cb", 1.0f), nj.value("ca", 1.0f));
+                    std::string np = nj.value("path", "");
+                    n.path = np.empty() ? "" : absPath(np, baseDir);
+                    n.uiPos = glm::vec2(nj.value("ux", 0.0f),
+                                        nj.value("uy", 0.0f));
+                    maxNodeId = std::max(maxNodeId, n.id);
+                    g.nodes.push_back(n);
+                }
+            }
+            g.nextNodeId = maxNodeId + 1;
+            // Validate input links: drop references to missing nodes.
+            for (auto& n : g.nodes)
+                for (int& inp : n.in)
+                    if (inp >= 0 && !g.findNode(inp)) inp = -1;
+            int savedId = gj.value("id", -1);
+            if (savedId >= 0 && !ctx.materials.findMaterial(savedId)) {
+                g.id = savedId;
+                if (g.outputId < 0 || !g.findNode(g.outputId) ||
+                    g.findNode(g.outputId)->type != MatNodeType::Output) {
+                    // Ensure exactly one Output node.
+                    MatNode out;
+                    out.type = MatNodeType::Output;
+                    out.id = g.nextNodeId++;
+                    out.uiPos = glm::vec2(420.0f, 120.0f);
+                    g.outputId = out.id;
+                    g.nodes.insert(g.nodes.begin(), out);
+                }
+                ctx.materials.addMaterialWithId(g);
+            } else {
+                ctx.materials.addMaterial(std::move(g));
+            }
+        }
     }
 
     return true;

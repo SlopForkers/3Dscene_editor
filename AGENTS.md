@@ -58,6 +58,7 @@ src/
  │   ├─ sim.cpp/h ................ SimController: in-editor logic simulation
  │   ├─ weather.h ................ WeatherParams + presets (GL-free, tested)
  │   ├─ weather_sys.h/.cpp ....... rain/snow particle box around the camera
+ │   ├─ material_graph.cpp/h ..... procedural material nodes + CPU bake/PNG
  │   ├─ skybox.cpp/h ............. cubemap sky + equirect→cubemap
  │   ├─ gizmo.cpp/h .............. translate/rotate/scale manipulator
  │   ├─ scene.cpp/h .............. App::saveScene/loadScene wrappers (format: scene.h)
@@ -177,6 +178,17 @@ lives in.
   never-reuse rule as other subsystems. `LogicNode::Kind` constants are
   `Cond`/`Act` (un-suffixed names would shadow the `Condition`/`Action`
   structs inside the struct scope).
+- **Material graphs**: CPU-baked procedural textures, NOT shader codegen —
+  `bakeMaterial` evaluates the DAG per pixel (vec4 per node, scalars as
+  grey; Image nodes use stb, noise uses `platform/noise.h` with per-seed
+  perm tables). The workflow is Bake → Export PNG → assign the PNG to
+  terrain layers / block textures (the game consumes plain textures);
+  graphs persist in the scene for editing. `in[]` links point at sources,
+  so the cycle rule is `matGraphReachable(g, source, target)` — the
+  opposite direction from spawn graphs. The node canvas in app_panels.cpp
+  (`matEdCanvas`/`matEdParamsPanel`) mirrors the Spawn Logic one with
+  multi-input pins. PNG export goes through stb_image_write +
+  `writeFileBytes` (UTF-8 paths).
 - **Simulation**: `SimController` (GL-free, unit-tested) continuously
   re-resolves each graph from the root; a changed resolution restarts that
   action chain. RandomChance latches per session (re-roll = restart);

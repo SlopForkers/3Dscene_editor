@@ -178,6 +178,20 @@ bool SpawnGraphCommand::merge(const Command& next) {
 }
 
 // ============================================================================
+// MaterialGraphCommand
+// ============================================================================
+
+bool MaterialGraphCommand::merge(const Command& next) {
+    auto* n = dynamic_cast<const MaterialGraphCommand*>(&next);
+    if (!n || n->id_ != id_) return false;
+    // Only param-widget edits coalesce (both sides marked mergeable);
+    // structural ops must stay one-undo-per-op.
+    if (!mergeable_ || !n->mergeable_) return false;
+    after_ = n->after_;
+    return true;
+}
+
+// ============================================================================
 // BlockTextureCommand
 // ============================================================================
 
