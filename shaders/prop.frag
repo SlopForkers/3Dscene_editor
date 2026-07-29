@@ -29,6 +29,11 @@ uniform mat4 uLightViewProj;
 uniform sampler2DShadow uShadowMap;
 uniform int uEnableShadow;
 
+// Weather (set every frame; see WeatherSystem).
+uniform vec3 uFogColor;
+uniform float uFogDensity;
+uniform float uLightScale;
+
 out vec4 FragColor;
 
 const float PI = 3.14159265359;
@@ -96,7 +101,8 @@ void main() {
         shadow /= 9.0;
     }
     // Shadow the directional light terms only; ambient stays unshadowed.
-    color = albedo * ambient + (diffuse + specular) * 1.4 * shadow;
+    color = albedo * ambient * mix(1.0, uLightScale, 0.5) +
+            (diffuse + specular) * 1.4 * shadow * uLightScale;
 
     if (uHasOcclusionTex) {
         float ao = texture(uOcclusionTex, vUv).r;
@@ -106,10 +112,11 @@ void main() {
         color += texture(uEmissiveTex, vUv).rgb * uEmissiveFactor;
     }
 
-    // Distance fog matching the terrain.
+    // Distance fog matching the terrain (exp2, weather-driven).
     float dist = length(uCamPos - vWorldPos);
-    float fog = clamp((dist - 120.0) / 600.0, 0.0, 0.7);
-    color = mix(color, vec3(0.55, 0.62, 0.70), fog);
+    float fogF = clamp(1.0 - exp(-uFogDensity * uFogDensity * dist * dist),
+                       0.0, 1.0);
+    color = mix(color, uFogColor, fogF);
 
     FragColor = vec4(color, base.a);
 }

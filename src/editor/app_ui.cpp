@@ -64,6 +64,7 @@ void App::renderImGui() {
     drawSpawnsWindow();
     drawSpawnLogicWindow();
     drawSimulationWindow();
+    drawWeatherWindow();
     if (showHelp_) drawHelpOverlay();
 
     // Brush value overlay: show radius/strength over the viewport image while
@@ -173,6 +174,7 @@ void App::buildDefaultLayout(unsigned int dockspaceId) {
     ImGui::DockBuilderDockWindow("Cameras", dockHierarchy);
     ImGui::DockBuilderDockWindow("Spawns", dockHierarchy);
     ImGui::DockBuilderDockWindow("Simulation", dockRight);
+    ImGui::DockBuilderDockWindow("Weather", dockRight);
     ImGui::DockBuilderFinish(id);
 }
 
@@ -287,6 +289,7 @@ void App::drawToolbarWindow() {
         { CatFile,    "File",             &showFile_      },
         { CatCamView, "Camera View",      &showCameraView_},
         { CatSim,     "Simulation",       &showSimulation_},
+        { CatWeather, "Weather",          &showWeather_   },
     };
     for (auto& p : panels) {
         if (iconCell(icons::catIcon(p.cat), p.name, *p.flag))
@@ -515,6 +518,13 @@ void App::drawSimulationWindow() {
     if (!showSimulation_) return;
     if (ImGui::Begin("Simulation", &showSimulation_))
         drawSimulationContent();
+    ImGui::End();
+}
+
+void App::drawWeatherWindow() {
+    if (!showWeather_) return;
+    if (ImGui::Begin("Weather", &showWeather_))
+        drawWeatherContent();
     ImGui::End();
 }
 

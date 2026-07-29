@@ -1343,6 +1343,65 @@ void App::drawSimulationContent() {
     }
 }
 
+// --------------------------------------------------------------------------
+// Weather: presets + parameter editing (persisted in the scene file).
+
+void App::drawWeatherContent() {
+    ImGui::TextDisabled("Weather");
+    ImGui::Separator();
+    WeatherParams& w = weather_.params;
+    // Any manual tweak after a named preset turns the preset into Custom.
+    auto tweak = [&]() {
+        if (ImGui::IsItemEdited() && w.preset != WeatherParams::Custom)
+            w.preset = WeatherParams::Custom;
+    };
+
+    const char* presets[] = { "Clear", "Overcast", "Rain", "Snow", "Fog",
+                              "Custom" };
+    int pr = (int)w.preset;
+    if (ImGui::Combo("Preset", &pr, presets, 6)) {
+        if (pr != (int)WeatherParams::Custom) w = weatherPreset(pr);
+        else w.preset = WeatherParams::Custom;
+    }
+    ImGui::Separator();
+
+    const char* pts[] = { "None", "Rain", "Snow" };
+    int pt = (int)w.precip;
+    if (ImGui::Combo("Precipitation", &pt, pts, 3)) {
+        w.precip = (WeatherParams::Precip)pt;
+        if (w.preset != WeatherParams::Custom) w.preset = WeatherParams::Custom;
+    }
+    ImGui::SliderFloat("Intensity", &w.precipIntensity, 0.0f, 1.0f, "%.2f");
+    tweak();
+
+    ImGui::Separator();
+    ImGui::DragFloat("Fog density", &w.fogDensity, 0.00004f, 0.0f, 0.03f,
+                     "%.4f");
+    tweak();
+    ImGui::ColorEdit3("Fog color", &w.fogColor[0]);
+    tweak();
+    ImGui::SliderFloat("Cloudiness", &w.cloudiness, 0.0f, 1.0f, "%.2f");
+    tweak();
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Dims the sun light and the sky");
+
+    ImGui::Separator();
+    ImGui::SliderAngle("Wind dir", &w.windAngle, -180.0f, 180.0f);
+    tweak();
+    ImGui::SliderFloat("Wind strength", &w.windStrength, 0.0f, 8.0f,
+                       "%.1f m/s");
+    tweak();
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Particle drift + vegetation sway");
+    ImGui::SliderFloat("Snow cover", &w.snowCover, 0.0f, 1.0f, "%.2f");
+    tweak();
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Extra snow caps on high terrain");
+
+    ImGui::Separator();
+    ImGui::TextDisabled("Saved in the scene; the game applies it.");
+}
+
 void App::drawCameraViewContent() {
     ImGui::Checkbox("Live previews", &camPreviewsLive_);
     ImGui::SameLine();

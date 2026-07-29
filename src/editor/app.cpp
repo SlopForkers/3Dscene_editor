@@ -105,7 +105,11 @@ bool App::initOpenGL() {
         return false;
     }
     if (!blockShader_.loadFromFile(shaderDir_ + "/block.vert",
-                                      shaderDir_ + "/block.frag")) {
+                                    shaderDir_ + "/block.frag")) {
+        return false;
+    }
+    if (!weatherShader_.loadFromFile(shaderDir_ + "/weather.vert",
+                                      shaderDir_ + "/weather.frag")) {
         return false;
     }
 
@@ -145,6 +149,7 @@ bool App::initOpenGL() {
     vertexEditor_.create();
     details_.create();
     build_.create();
+    weather_.create();
 
     // Unit-cube wireframe (24 vertices, 12 edges) for prop selection boxes.
     {
@@ -241,6 +246,8 @@ void App::shutdown() {
         vertexEditor_.destroy();
         details_.destroy();
         build_.destroy();
+        weather_.destroy();
+        weatherShader_.destroy();
         boxVao_.destroy();
         boxVbo_.destroy();
         dragVao_.destroy();
@@ -316,6 +323,8 @@ int App::run(const std::vector<std::string>& importArgs) {
         glfwPollEvents();
         handleInput(dt);
         updateSimulation(dt);
+        timeSec_ += dt;
+        weather_.update(dt, weather_.params, camera_.position(), timeSec_);
 
         // Resize handling
         int curFbW = 0, curFbH = 0;
@@ -605,6 +614,7 @@ void App::renderDepthPass(const glm::mat4& lvp) {
     if (props_.count() > 0) {
         propShader_.use();
         propShader_.setInt("uEnableShadow", 0);
+        propShader_.setFloat("uWindSway", 0.0f);   // props don't sway
         assertFrontCull();
         props_.render(propShader_, lvp, glm::vec3(0.0f), glm::vec3(0.0f));
     }
@@ -612,6 +622,14 @@ void App::renderDepthPass(const glm::mat4& lvp) {
     if (details_.instanceCount() > 0) {
         propShader_.use();
         propShader_.setInt("uEnableShadow", 0);
+        // Sway must match the main pass or shadows lag behind the geometry.
+        const WeatherParams& weather = weather_.params;
+        propShader_.setFloat("uWindSway",
+            std::clamp(weather.windStrength * 0.06f, 0.0f, 0.15f));
+        glm::vec2 wxz = weather.windXZ();
+        propShader_.setVec2("uWindDir", wxz == glm::vec2(0.0f)
+            ? glm::vec2(0.0f, 1.0f) : glm::normalize(wxz));
+        propShader_.setFloat("uTime", timeSec_);
         assertFrontCull();
         details_.render(propShader_, lvp, glm::vec3(0.0f), glm::vec3(0.0f));
     }
@@ -626,6 +644,7 @@ void App::renderDepthPass(const glm::mat4& lvp) {
     if (!spawns_.spawns().empty()) {
         propShader_.use();
         propShader_.setInt("uEnableShadow", 0);
+        propShader_.setFloat("uWindSway", 0.0f);   // characters don't sway
         assertFrontCull();
         renderSpawnModels(lvp, glm::vec3(0.0f), glm::vec3(0.0f));
     }
@@ -674,11 +693,21 @@ void App::renderWorld(const glm::mat4& view, const glm::mat4& proj,
     }
     int enableShadow = withShadows ? 1 : 0;
 
+    // Weather-driven lighting/particles (no initializers in GLSL — every
+    // uniform is set explicitly each pass).
+    const WeatherParams& weather = weather_.params;
+    float lightScale = weather.lightScale();
+    float sway = std::clamp(weather.windStrength * 0.06f, 0.0f, 0.15f);
+    glm::vec2 windXZ = weather.windXZ();
+    glm::vec2 windDir = windXZ == glm::vec2(0.0f)
+                            ? glm::vec2(0.0f, 1.0f)
+                            : glm::normalize(windXZ);
+
     // --- Main pass ---
-    // Skybox first.
+    // Skybox first (overcast dims it too).
     glm::mat4 skyVp = proj * glm::mat4(glm::mat3(view));
     glDepthFunc(GL_LEQUAL);
-    skybox_.draw(skyboxShader_, skyVp, skyExposure_);
+    skybox_.draw(skyboxShader_, skyVp, skyExposure_ * weather.skyScale());
     glDepthFunc(GL_LESS);
 
     terrainShader_.use();
@@ -690,6 +719,10 @@ void App::renderWorld(const glm::mat4& view, const glm::mat4& proj,
     terrainShader_.setMat4("uLightViewProj", lvp);
     terrainShader_.setInt("uShadowMap", kShadowTexUnit);
     terrainShader_.setInt("uEnableShadow", enableShadow);
+    terrainShader_.setVec3("uFogColor", weather.fogColor);
+    terrainShader_.setFloat("uFogDensity", weather.fogDensity);
+    terrainShader_.setFloat("uLightScale", lightScale);
+    terrainShader_.setFloat("uSnowCover", weather.snowCover);
     terrain_.bindTextures(terrainShader_);
     terrain_.draw();
 
@@ -698,6 +731,10 @@ void App::renderWorld(const glm::mat4& view, const glm::mat4& proj,
         propShader_.setMat4("uLightViewProj", lvp);
         propShader_.setInt("uShadowMap", kShadowTexUnit);
         propShader_.setInt("uEnableShadow", enableShadow);
+        propShader_.setVec3("uFogColor", weather.fogColor);
+        propShader_.setFloat("uFogDensity", weather.fogDensity);
+        propShader_.setFloat("uLightScale", lightScale);
+        propShader_.setFloat("uWindSway", 0.0f);   // props don't sway
         props_.render(propShader_, vp, lightDir, camPos);
     }
     if (details_.instanceCount() > 0) {
@@ -705,6 +742,13 @@ void App::renderWorld(const glm::mat4& view, const glm::mat4& proj,
         propShader_.setMat4("uLightViewProj", lvp);
         propShader_.setInt("uShadowMap", kShadowTexUnit);
         propShader_.setInt("uEnableShadow", enableShadow);
+        propShader_.setVec3("uFogColor", weather.fogColor);
+        propShader_.setFloat("uFogDensity", weather.fogDensity);
+        propShader_.setFloat("uLightScale", lightScale);
+        // Vegetation wind sway (instanced path only, see prop.vert).
+        propShader_.setFloat("uWindSway", sway);
+        propShader_.setVec2("uWindDir", windDir);
+        propShader_.setFloat("uTime", timeSec_);
         details_.render(propShader_, vp, lightDir, camPos);
     }
     if (build_.count() > 0) {
@@ -712,6 +756,9 @@ void App::renderWorld(const glm::mat4& view, const glm::mat4& proj,
         blockShader_.setMat4("uLightViewProj", lvp);
         blockShader_.setInt("uShadowMap", kShadowTexUnit);
         blockShader_.setInt("uEnableShadow", enableShadow);
+        blockShader_.setVec3("uFogColor", weather.fogColor);
+        blockShader_.setFloat("uFogDensity", weather.fogDensity);
+        blockShader_.setFloat("uLightScale", lightScale);
         build_.render(blockShader_, vp, lightDir, camPos);
     }
     if (anySpawnModelVisible()) {
@@ -719,8 +766,15 @@ void App::renderWorld(const glm::mat4& view, const glm::mat4& proj,
         propShader_.setMat4("uLightViewProj", lvp);
         propShader_.setInt("uShadowMap", kShadowTexUnit);
         propShader_.setInt("uEnableShadow", enableShadow);
+        propShader_.setVec3("uFogColor", weather.fogColor);
+        propShader_.setFloat("uFogDensity", weather.fogDensity);
+        propShader_.setFloat("uLightScale", lightScale);
+        propShader_.setFloat("uWindSway", 0.0f);   // characters don't sway
         renderSpawnModels(vp, lightDir, camPos);
     }
+    // Precipitation (particles live around the main view camera; previews of
+    // distant scene cameras may see thin coverage — accepted v1 trade-off).
+    weather_.render(weatherShader_, weather, vp, targetH, proj[1][1]);
 }
 
 void App::renderScene() {

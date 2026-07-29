@@ -14,6 +14,7 @@
 #include "scene_camera.h"
 #include "spawn.h"
 #include "sim.h"
+#include "weather_sys.h"
 #include "gl_resource.h"
 #include "tools.h"
 #include "history.h"
@@ -40,6 +41,7 @@ public:
         CatFile,
         CatCameras, CatCamView,
         CatSpawns, CatSim,
+        CatWeather,
         CatCount
     };
 
@@ -56,6 +58,9 @@ public:
     Shader skyboxShader_;
     Shader skyboxConvertShader_;
     Shader blockShader_;
+    Shader weatherShader_;
+    WeatherSystem weather_;   // params persisted in the scene
+    float timeSec_ = 0.0f;    // app time for wind sway / snow drift
     Skybox skybox_;
     float skyExposure_ = 1.0f;
     Terrain::BrushParams brush_;
@@ -124,6 +129,7 @@ public:
     void drawSpawnToolContent();
     void drawSpawnLogicContent();
     void drawSimulationContent();
+    void drawWeatherContent();
     // World (editor camera) -> main-window pixel position, for overlays.
     bool worldToScreen(const glm::vec3& p, float& sx, float& sy) const;
 
@@ -178,6 +184,7 @@ public:
     bool showSpawns_    = false;
     bool showSpawnLogic_= false;
     bool showSimulation_= false;
+    bool showWeather_   = false;
 
     // Scene cameras: frustum visualisation + preview window options.
     bool showCamFrustums_ = true;
@@ -307,6 +314,7 @@ private:
     void drawSpawnsWindow();
     void drawSpawnLogicWindow();
     void drawSimulationWindow();
+    void drawWeatherWindow();
     void buildDefaultLayout(unsigned int dockspaceId);
     void ensureViewportFbo();
 

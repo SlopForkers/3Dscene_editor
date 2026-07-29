@@ -56,6 +56,8 @@ src/
  │   ├─ scene_camera.cpp/h ....... SceneCamera (id/name/tag/pose/fov) + CameraRig
  │   ├─ spawn.cpp/h .............. spawn markers + condition/action logic graph
  │   ├─ sim.cpp/h ................ SimController: in-editor logic simulation
+ │   ├─ weather.h ................ WeatherParams + presets (GL-free, tested)
+ │   ├─ weather_sys.h/.cpp ....... rain/snow particle box around the camera
  │   ├─ skybox.cpp/h ............. cubemap sky + equirect→cubemap
  │   ├─ gizmo.cpp/h .............. translate/rotate/scale manipulator
  │   ├─ scene.cpp/h .............. App::saveScene/loadScene wrappers (format: scene.h)
@@ -127,7 +129,12 @@ lives in.
   `Model::render` / `DetailSystem::render` tail).
 - **Shaders**: no uniform initializers (GLSL 330). Every uniform must be set
   explicitly by the caller each frame — `line.frag`'s `uAlpha` is the
-  canonical example.
+  canonical example. Weather uniforms (`uFogColor`/`uFogDensity`/
+  `uLightScale`/`uSnowCover`/`uWindSway`/`uWindDir`/`uTime`) are set per
+  subsystem in `renderWorld` from `weather_.params`; `uWindSway` is 0 for
+  props/characters and must be re-asserted in the shadow depth pass too
+  (uniforms persist per program). Vegetation sway lives in `prop.vert`
+  (instanced path only).
 - **HiDPI + viewport window**: mouse coords from `Input` are in *window*
   pixels relative to the main window; the scene viewport is the Viewport
   window's FBO in *framebuffer* pixels. Use `App::cursorRay()`; sub-gizmos

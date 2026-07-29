@@ -158,6 +158,9 @@ set(SOURCES
     src/scene/spawn.h
     src/scene/sim.cpp
     src/scene/sim.h
+    src/scene/weather.cpp
+    src/scene/weather.h
+    src/scene/weather_sys.h
     src/scene/history.cpp
     src/scene/history.h
     src/scene/commands.cpp
@@ -235,6 +238,7 @@ if(BUILD_TESTS)
         tests/test_scene_camera.cpp
         tests/test_spawn.cpp
         tests/test_sim.cpp
+        tests/test_weather.cpp
         ${CMAKE_SOURCE_DIR}/src/scene/history.cpp
         ${CMAKE_SOURCE_DIR}/src/scene/scene_camera.cpp
         ${CMAKE_SOURCE_DIR}/src/scene/spawn.cpp

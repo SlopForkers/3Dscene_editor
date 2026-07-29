@@ -18,6 +18,11 @@ uniform mat4 uLightViewProj;
 uniform sampler2DShadow uShadowMap;
 uniform int uEnableShadow;
 
+// Weather (set every frame; see WeatherSystem).
+uniform vec3 uFogColor;
+uniform float uFogDensity;
+uniform float uLightScale;
+
 out vec4 FragColor;
 
 // Map a normal to a face index (matches BuildSystem::Face).
@@ -70,11 +75,13 @@ void main() {
                 shadow += texture(uShadowMap, vec3(proj.xy + vec2(x, y) * inv, proj.z - bias));
         shadow /= 9.0;
     }
-    color = baseColor * ambient + baseColor * NdotL * 0.8 * shadow;
+    color = baseColor * ambient * mix(1.0, uLightScale, 0.5) +
+            baseColor * NdotL * 0.8 * shadow * uLightScale;
 
     float dist = length(uCamPos - vWorldPos);
-    float fog = clamp((dist - 120.0) / 600.0, 0.0, 0.7);
-    color = mix(color, vec3(0.55, 0.62, 0.70), fog);
+    float fogF = clamp(1.0 - exp(-uFogDensity * uFogDensity * dist * dist),
+                       0.0, 1.0);
+    color = mix(color, uFogColor, fogF);
 
     FragColor = vec4(color, uAlpha);
 }

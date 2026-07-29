@@ -14,6 +14,10 @@ uniform mat4 uModel;      // node global transform within the model
 uniform mat4 uJointMatrices[256];
 uniform int  uHasSkin;
 uniform int  uInstanced;  // 1 = use aInstance attribute, 0 = use uInstance uniform
+// Vegetation wind sway (set only for instanced details; 0 = off).
+uniform float uWindSway;  // amplitude in meters
+uniform vec2  uWindDir;   // normalised XZ
+uniform float uTime;
 
 out vec3 vNormal;
 out vec2 vUv;
@@ -35,6 +39,16 @@ void main() {
     }
 
     vec4 world = (uInstanced == 1 ? aInstance : uInstance) * uModel * pos;
+
+    // Wind sway: amplitude grows with model-local height (pivot at the
+    // base), the phase varies across instances so they don't move in sync.
+    if (uWindSway > 0.0) {
+        float h = clamp(pos.y * 0.5, 0.0, 1.0);
+        float phase = dot(world.xz, vec2(0.31, 0.47));
+        float s = sin(uTime * 1.7 + phase) * uWindSway * h;
+        world.x += uWindDir.x * s;
+        world.z += uWindDir.y * s;
+    }
     vWorldPos = world.xyz;
 
     mat3 worldMat = mat3((uInstanced == 1 ? aInstance : uInstance) * uModel);

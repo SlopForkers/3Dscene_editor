@@ -12,6 +12,7 @@ class DetailSystem;
 class BuildSystem;
 class SpawnManager;
 class SimController;
+struct WeatherParams;
 class Shader;
 class Model;
 
@@ -25,6 +26,7 @@ struct SceneContext {
     BuildSystem& build;
     SpawnManager& spawns;
     SimController& sim;
+    WeatherParams& weather;
     std::vector<std::shared_ptr<Model>>& modelLibrary;
     Shader& skyboxConvertShader;
     float& skyExposure;

@@ -21,6 +21,12 @@ uniform mat4 uLightViewProj;
 uniform sampler2DShadow uShadowMap;
 uniform int uEnableShadow;
 
+// Weather (set every frame; see WeatherSystem).
+uniform vec3 uFogColor;
+uniform float uFogDensity;
+uniform float uLightScale;
+uniform float uSnowCover;
+
 out vec4 FragColor;
 
 // Weight of layer i (0..15): which splat map (i/4) and channel (i%4).
@@ -87,9 +93,11 @@ void main() {
     vec3 ambient = mix(vec3(0.18, 0.20, 0.26), vec3(0.35, 0.38, 0.45), hemi);
 
     // Snow caps on the tallest points (height-based, on top of textures).
+    // uSnowCover (weather) lowers the threshold for a fuller winter look.
     float t = clamp((vHeight + 2.0) / max(uMaxHeight + 2.0, 1.0), 0.0, 1.0);
-    float snow = smoothstep(0.80, 1.0, t);
-    albedo = mix(albedo, vec3(0.90, 0.92, 0.95), snow * 0.85);
+    float snow = smoothstep(0.80, 1.0, t) * 0.85;
+    snow = max(snow, smoothstep(mix(0.90, 0.55, uSnowCover), 1.0, t) * uSnowCover);
+    albedo = mix(albedo, vec3(0.90, 0.92, 0.95), clamp(snow, 0.0, 1.0));
 
     // PCF shadows.
     float shadow = 1.0;
@@ -106,17 +114,19 @@ void main() {
                 shadow += texture(uShadowMap, vec3(proj.xy + vec2(x, y) * inv, proj.z - bias));
         shadow /= 9.0;
     }
-    vec3 color = albedo * (ambient + diff * 0.9 * shadow);
+    vec3 color = albedo * (ambient * mix(1.0, uLightScale, 0.5) +
+                           diff * 0.9 * shadow * uLightScale);
 
     // Subtle rim.
     vec3 V = normalize(uCamPos - vWorldPos);
     float rim = pow(1.0 - max(dot(N, V), 0.0), 3.0) * 0.15;
     color += rim;
 
-    // Distance fog.
+    // Distance fog (exp2, weather-driven).
     float dist = length(uCamPos - vWorldPos);
-    float fog = clamp((dist - 120.0) / 600.0, 0.0, 0.7);
-    color = mix(color, vec3(0.55, 0.62, 0.70), fog);
+    float fogF = clamp(1.0 - exp(-uFogDensity * uFogDensity * dist * dist),
+                       0.0, 1.0);
+    color = mix(color, uFogColor, fogF);
 
     FragColor = vec4(color, 1.0);
 }

@@ -5,6 +5,7 @@
 #include "scene_camera.h"
 #include "spawn.h"
 #include "sim.h"
+#include "weather.h"
 #include "prop.h"
 #include "detail.h"
 #include "build.h"
@@ -162,6 +163,21 @@ bool saveScene(const std::string& path, const SceneContext& ctx) {
     for (const auto& kv : ctx.sim.flags())
         flagsObj[std::to_string(kv.first)] = kv.second;
     root["flags"] = flagsObj;
+
+    // Weather.
+    nlohmann::json wj = nlohmann::json::object();
+    wj["preset"] = (int)ctx.weather.preset;
+    wj["precip"] = (int)ctx.weather.precip;
+    wj["precipIntensity"] = ctx.weather.precipIntensity;
+    wj["fogColorR"] = ctx.weather.fogColor.r;
+    wj["fogColorG"] = ctx.weather.fogColor.g;
+    wj["fogColorB"] = ctx.weather.fogColor.b;
+    wj["fogDensity"] = ctx.weather.fogDensity;
+    wj["cloudiness"] = ctx.weather.cloudiness;
+    wj["windAngle"] = ctx.weather.windAngle;
+    wj["windStrength"] = ctx.weather.windStrength;
+    wj["snowCover"] = ctx.weather.snowCover;
+    root["weather"] = wj;
 
     // Props.
     nlohmann::json propsArr = nlohmann::json::array();
@@ -631,6 +647,26 @@ bool loadScene(const std::string& path, SceneContext& ctx) {
             int key = std::atoi(el.key().c_str());
             ctx.sim.flags()[key] = el.value().get<int>();
         }
+    }
+
+    // --- Weather ---
+    const auto& wj = root["weather"];
+    if (wj.is_object()) {
+        WeatherParams& w = ctx.weather;
+        w.preset = (WeatherParams::Preset)std::clamp(
+            wj.value("preset", 0), 0, (int)WeatherParams::Custom);
+        w.precip = (WeatherParams::Precip)std::clamp(
+            wj.value("precip", 0), 0, (int)WeatherParams::PrecipSnow);
+        w.precipIntensity = std::clamp(wj.value("precipIntensity", 0.6f),
+                                       0.0f, 1.0f);
+        w.fogColor = glm::vec3(wj.value("fogColorR", 0.55f),
+                               wj.value("fogColorG", 0.62f),
+                               wj.value("fogColorB", 0.70f));
+        w.fogDensity = std::clamp(wj.value("fogDensity", 0.0012f), 0.0f, 1.0f);
+        w.cloudiness = std::clamp(wj.value("cloudiness", 0.0f), 0.0f, 1.0f);
+        w.windAngle = wj.value("windAngle", 0.6f);
+        w.windStrength = std::clamp(wj.value("windStrength", 0.0f), 0.0f, 50.0f);
+        w.snowCover = std::clamp(wj.value("snowCover", 0.0f), 0.0f, 1.0f);
     }
 
     return true;

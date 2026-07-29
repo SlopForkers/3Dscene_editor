@@ -329,6 +329,24 @@ static void CatSim(ImDrawList* dl, ImVec2 p0, ImVec2 p1, ImU32 col) {
 
 
 
+static void CatWeather(ImDrawList* dl, ImVec2 p0, ImVec2 p1, ImU32 col) {
+    // Cloud (three bumps) with two rain drops below.
+    float w = p1.x - p0.x, h = p1.y - p0.y;
+    ImVec2 c((p0.x + p1.x) * 0.5f, p0.y + h * 0.42f);
+    dl->AddCircleFilled(ImVec2(c.x - w * 0.14f, c.y + h * 0.02f), w * 0.16f, col);
+    dl->AddCircleFilled(ImVec2(c.x + w * 0.06f, c.y - h * 0.10f), w * 0.20f, col);
+    dl->AddCircleFilled(ImVec2(c.x + w * 0.24f, c.y + h * 0.04f), w * 0.13f, col);
+    dl->AddRectFilled(ImVec2(c.x - w * 0.28f, c.y + h * 0.02f),
+                      ImVec2(c.x + w * 0.34f, c.y + h * 0.14f), col, h * 0.06f);
+    float dy0 = c.y + h * 0.26f;
+    dl->AddLine(ImVec2(c.x - w * 0.12f, dy0),
+                ImVec2(c.x - w * 0.18f, dy0 + h * 0.16f), col, 2.0f);
+    dl->AddLine(ImVec2(c.x + w * 0.12f, dy0),
+                ImVec2(c.x + w * 0.06f, dy0 + h * 0.16f), col, 2.0f);
+}
+
+
+
 IconFn brushIcon(int type) {
     switch (type) {
         case Terrain::BrushParams::Raise:    return &Raise;
@@ -360,6 +378,7 @@ IconFn catIcon(int cat) {
         case App::CatCamView:    return &CatCamView;
         case App::CatSpawns:     return &CatSpawns;
         case App::CatSim:        return &CatSim;
+        case App::CatWeather:    return &CatWeather;
         default: return nullptr;
     }
 }
@@ -381,6 +400,7 @@ const char* catName(int cat) {
         case App::CatCamView:    return "Camera View";
         case App::CatSpawns:     return "Spawns";
         case App::CatSim:        return "Simulation";
+        case App::CatWeather:    return "Weather";
         default: return "?";
     }
 }
